@@ -1,13 +1,14 @@
 from fastapi import FastAPI, Request
 import uvicorn
+from service import wb_confluence_service 
 
 server = FastAPI()
 
 @server.post("/webhook/confluence")
 async def ingest_confluence_webhook(request: Request):
     data = await request.json()
-    print("Webhook Event Recieved: ",data)
-    return {"status": "ingested"}
+    await wb_confluence_service.extract(data)
+    return {"status":"ok"}
 
 @server.get("/rag/retrieve")
 def retrieve_rag_data():
