@@ -1,0 +1,19 @@
+1) Create Confluence Webhook 
+
+    POST <Confluence URL>/wiki/rest/webhooks/1.0/webhook
+    basic auth <user name>:<API Token>
+    {
+        "name": "Webhook for Confluence RAG",
+        "events": [
+            "page_removed",
+            "page_created",
+            "page_trashed",
+            "page_updated"
+        ],
+        "url": "<server url>",
+        "active": true
+    }
+2) Get Confluence Webhooks
+
+    GET <Confluence URL>/wiki/rest/webhooks/1.0/webhook
+    basic auth <user name>:<API Token>
