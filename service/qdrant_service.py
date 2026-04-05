@@ -1,0 +1,164 @@
+import uuid
+import os
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
+class QdrantService:
+    def __init__(self):
+        self.client = QdrantClient(
+            host=os.getenv("QDRANT_HOST", "localhost"), 
+            port=int(os.getenv("QDRANT_PORT", 6333))
+        )
+        self.collection_name = "confluence_page"
+    
+    def init_infrastructure(self):
+        logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
+        try:
+            self.client.get_collection(self.collection_name)
+            logger.info(f"--- [Qdrant] Collection '{self.collection_name}' already exists. ---")
+        except UnexpectedResponse as e:
+            if e.status_code == 404:
+                logger.info(f"--- [Qdrant] Collection not found. Creating new schema... ---")
+                self.create_collection()
+            else:
+                raise
+
+    def create_collection(self):
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config={
+                "dense-vector": models.VectorParams(
+                    size=384, # BGE-Small dimension 
+                    distance=models.Distance.COSINE
+                )
+            },
+            sparse_vectors_config={
+                "sparse-vector": models.SparseVectorParams(
+                    index=models.SparseIndexParams(on_disk=True)
+                )
+            }
+        )
+
+        self.client.create_payload_index(
+            collection_name=self.collection_name,
+            field_name="page_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        
+        logger.info(f"--- [Qdrant] Collection and Page ID Index created. ---")
+    
+    def close(self):
+        logger.info("--- [Qdrant] Closing client connection... ---")
+        self.client.close()
+
+    def check_if_changed(self, page_id: str, new_hash: str) -> bool:
+        results, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))]
+            ),
+            limit=1,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        if not results:
+            return True 
+        
+        payload = results[0].payload
+        
+        if payload is None:
+            return True
+
+        old_hash = payload.get("content_hash")
+
+        if old_hash is None:
+            return True
+            
+        return old_hash != new_hash
+
+    def upsert_chunks(self, chunks, dense_vecs, sparse_vecs):
+        points = []
+        for i, chunk in enumerate(chunks):
+            sparse_dict = models.SparseVector(
+                indices=sparse_vecs[i].indices.tolist(),
+                values=sparse_vecs[i].values.tolist()
+            )
+            
+            page_id = chunk.metadata["page_id"]
+            idx = chunk.metadata["chunk_index"]
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{page_id}_{idx}"))
+
+            points.append(models.PointStruct(
+                id=point_id,
+                vector={
+                    "dense-vector": dense_vecs[i].tolist(), 
+                    "sparse-vector": sparse_dict 
+                },
+                payload={**chunk.metadata, "content": chunk.page_content}
+            ))
+
+        self.client.upsert(
+            collection_name=self.collection_name,
+            points=points
+        )
+
+    def delete_chunks(self, page_id: str):
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.Filter(
+                must=[models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))]
+            )
+        )
+
+    async def hybrid_search(self, query_dense, query_sparse, limit=5, alpha=0.5, page_id=None, chunk_index=None):
+        filter_conditions = []
+        if page_id:
+            filter_conditions.append(models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id)))
+        if chunk_index is not None:
+            filter_conditions.append(models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index)))
+
+        search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+
+        sparse_query = models.SparseVector(
+            indices=query_sparse.indices.tolist(),
+            values=query_sparse.values.tolist()
+        )
+
+        response = self.client.query_points(
+            collection_name=self.collection_name,
+            prefetch=[
+                models.Prefetch(
+                    query=query_dense,
+                    using="dense-vector",
+                    limit=limit,
+                    filter=search_filter
+                ),
+                models.Prefetch(
+                    query=sparse_query,
+                    using="sparse-vector",
+                    limit=limit,
+                    filter=search_filter
+                ),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            limit=limit
+        )
+
+        results = []
+        for point in response.points:
+            if point.payload:
+                combined_data = {**point.payload, "score": point.score}
+                results.append(combined_data)
+        
+        return results
+    
+qdrant_service = QdrantService()

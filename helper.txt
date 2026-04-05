@@ -17,3 +17,6 @@
 
     GET <Confluence URL>/wiki/rest/webhooks/1.0/webhook
     basic auth <user name>:<API Token>
+
+pipreqs . --force --ignore .venv --encoding utf-8
+ngrok http --domain=pleasant-whippet-select.ngrok-free.app 9900
