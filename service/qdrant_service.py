@@ -20,23 +20,32 @@ class QdrantService:
             port=int(os.getenv("QDRANT_PORT", 6333))
         )
         self.collection_name = "enterprise_knowledge_base"
-    
-    import time
 
-    def init_qdrant(self, retries=5, delay=3):
+
+
+    def init_infrastructure(self, retries=5, delay=5):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
-
+        
         for attempt in range(retries):
             try:
                 self.client.get_collection(self.collection_name)
-                logger.info("--- [Qdrant] Collection exists ---")
-                return True
+                logger.info(f"--- [Qdrant] Collection '{self.collection_name}' already exists. ---")
+                return True 
 
+            except UnexpectedResponse as e:
+                if e.status_code == 404:
+                    logger.info(f"--- [Qdrant] Collection not found. Creating new schema... ---")
+                    self.create_collection()
+                    return True 
+                else:
+                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {e}")
+            
             except Exception as e:
-                logger.warning(f"[Qdrant] Attempt {attempt+1} failed: {e}")
-                time.sleep(delay)
+                logger.warning(f"[Qdrant] Connection attempt {attempt+1} failed. Retrying in {delay}s...")
+            
+            time.sleep(delay)
 
-        logger.error("--- [Qdrant] Initialization FAILED after retries ---")
+        logger.error("--- [Qdrant] Initialization FAILED: Could not connect to database. ---")
         return False
 
     def create_collection(self):
