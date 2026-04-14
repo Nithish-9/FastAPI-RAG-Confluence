@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 DENSE_MODEL_DIM = int(str(os.getenv("DENSE_MODEL_DIM")))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-QDRANT_COLLECTION = str(os.getenv("QDRANT_COLLECTION"))
 QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
 QDRANT_DELAY = int(os.getenv("QDRANT_DELAY", 3))
 
@@ -26,7 +25,7 @@ class QdrantService:
             host=QDRANT_HOST, 
             port=QDRANT_PORT
         )
-        self.collection_name = QDRANT_COLLECTION
+        self.collection_name = "confluence_rag"
 
 
 
