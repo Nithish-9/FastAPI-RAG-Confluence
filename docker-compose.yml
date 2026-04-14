@@ -1,0 +1,31 @@
+services:
+  rag-server:
+    build: .
+    image: ragserver
+    container_name: rag_fastapi_app
+    restart: always
+    ports:
+      - "9900:9900"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL}
+      - EMAIL=${EMAIL}
+      - API_TOKEN=${API_TOKEN}
+      - HF_HOME=/root/.cache/huggingface
+    depends_on:
+      - qdrant
+    volumes:
+      - .:/app
+      - ./model_cache:/root/.cache/huggingface
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: always
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+      - ./qdrant_config.yaml:/qdrant/config/production.yaml

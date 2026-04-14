@@ -2,6 +2,7 @@ import uuid
 import os
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
+from service.rerank_service import rerank_service
 import logging
 
 logging.basicConfig(
@@ -17,7 +18,7 @@ class QdrantService:
             host=os.getenv("QDRANT_HOST", "localhost"), 
             port=int(os.getenv("QDRANT_PORT", 6333))
         )
-        self.collection_name = "confluence_page"
+        self.collection_name = "enterprise_knowledge_base"
     
     def init_infrastructure(self):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
@@ -36,7 +37,7 @@ class QdrantService:
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=384, # BGE-Small dimension 
+                    size=384,
                     distance=models.Distance.COSINE
                 )
             },
@@ -58,8 +59,20 @@ class QdrantService:
     def close(self):
         logger.info("--- [Qdrant] Closing client connection... ---")
         self.client.close()
+    
+    def check_doc_changed(self, page_id: str) -> bool:
+        results, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))]
+            ),
+            limit=1,
+            with_payload=False,
+            with_vectors=False
+        )
+        return len(results) == 0
 
-    def check_if_changed(self, page_id: str, new_hash: str) -> bool:
+    def check_confluence_changed(self, page_id: str, new_hash: str) -> bool:
         results, _ = self.client.scroll(
             collection_name=self.collection_name,
             scroll_filter=models.Filter(
@@ -74,15 +87,10 @@ class QdrantService:
             return True 
         
         payload = results[0].payload
-        
         if payload is None:
             return True
 
         old_hash = payload.get("content_hash")
-
-        if old_hash is None:
-            return True
-            
         return old_hash != new_hash
 
     def upsert_chunks(self, chunks, dense_vecs, sparse_vecs):
@@ -119,7 +127,7 @@ class QdrantService:
             )
         )
 
-    async def hybrid_search(self, query_dense, query_sparse, limit=5, alpha=0.5, page_id=None, chunk_index=None):
+    async def hybrid_search(self, query_text, query_dense, query_sparse, limit=5, alpha=0.5, page_id=None, chunk_index=None):
         filter_conditions = []
         if page_id:
             filter_conditions.append(models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id)))
@@ -127,6 +135,8 @@ class QdrantService:
             filter_conditions.append(models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index)))
 
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
+
+        candidate_limit = limit * 4 
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices.tolist(),
@@ -139,26 +149,43 @@ class QdrantService:
                 models.Prefetch(
                     query=query_dense,
                     using="dense-vector",
-                    limit=limit,
+                    limit=candidate_limit,
                     filter=search_filter
                 ),
                 models.Prefetch(
                     query=sparse_query,
                     using="sparse-vector",
-                    limit=limit,
+                    limit=candidate_limit,
                     filter=search_filter
                 ),
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=limit
+            limit=candidate_limit
         )
 
-        results = []
+        candidates = []
         for point in response.points:
             if point.payload:
-                combined_data = {**point.payload, "score": point.score}
-                results.append(combined_data)
-        
-        return results
+                candidates.append({
+                    "content": point.payload.get("content", ""),
+                    "metadata": point.payload,
+                    "rrf_score": point.score
+                })
+
+        if not candidates:
+            return []
+
+        try:
+            
+            final_results = await rerank_service.rerank(
+                query=query_text, 
+                documents=candidates, 
+                top_n=limit
+            )
+            return final_results
+            
+        except Exception as e:
+            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {e} ---")
+            return candidates[:limit]
     
 qdrant_service = QdrantService()

@@ -1,16 +1,20 @@
-from fastapi import FastAPI, Request
-import uvicorn
-from service import wb_confluence_service 
-from models.rag_model import RAGQueryRequest
-from service.embedding_service import embed_service
-from service.qdrant_service import qdrant_service
-from fastapi import Request, HTTPException, status
-from fastapi.responses import JSONResponse
+import os
+import uuid
 import logging
 import asyncio
 from contextlib import asynccontextmanager
-from core.concurrency import executor
 from dotenv import load_dotenv
+
+import uvicorn
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException, status
+from fastapi.responses import JSONResponse
+
+from service import document_processor 
+from models.rag_model import RAGQueryRequest
+from service.generate_embedding import embed_service
+from service.qdrant_service import qdrant_service
+from core.concurrency import executor
+from service.rerank_service import rerank_service
 
 load_dotenv()
 
@@ -18,7 +22,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
@@ -26,12 +29,16 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_running_loop()
     logger.info("--- [SYSTEM] Initializing Components ---")
     
-    await asyncio.gather(
-        loop.run_in_executor(executor, qdrant_service.init_infrastructure),
-        loop.run_in_executor(executor, embed_service.load_dense_model),
-        loop.run_in_executor(executor, embed_service.load_sparse_model)
-    )
-    logger.info("--- [SYSTEM] Components Ready !!! ---")
+    try:
+        await asyncio.gather(
+            loop.run_in_executor(executor, qdrant_service.init_infrastructure),
+            loop.run_in_executor(executor, embed_service.load_dense_model),
+            loop.run_in_executor(executor, embed_service.load_sparse_model),
+            loop.run_in_executor(executor, rerank_service.load_reranker_model)
+        )
+        logger.info("--- [SYSTEM] Components Ready !!! ---")
+    except Exception as e:
+        logger.error(f"--- [SYSTEM] Initialization Failed: {e} ---")
 
     yield 
     
@@ -39,17 +46,17 @@ async def lifespan(app: FastAPI):
     qdrant_service.close()
     executor.shutdown(wait=True)
 
-server = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan)
 
-
-@server.post("/webhook/confluence")
+@app.post("/webhook/confluence")
 async def ingest_confluence_webhook(request: Request):
     try:
         data = await request.json()
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(executor, run_ingestion_sync, data)
+
+        loop.run_in_executor(executor, run_confluence_ingestion, data)
         
-        return {"status": "success", "message": "Ingestion process started"}
+        return {"status": "success", "message": "Confluence ingestion started"}
     except Exception as e:
         logger.error(f"Webhook Submission Failed: {str(e)}")
         return JSONResponse(
@@ -57,21 +64,63 @@ async def ingest_confluence_webhook(request: Request):
             content={"status": "error", "message": "Failed to submit webhook"}
         )
 
-def run_ingestion_sync(data):
+def run_confluence_ingestion(data):
     try:
-        asyncio.run(wb_confluence_service.extract(data))
+        asyncio.run(document_processor.extract(data, "CONFLUENCE"))
     except Exception as e:
-        logger.error(f"Background Worker Error: {str(e)}")
+        logger.error(f"Confluence Worker Error: {str(e)}")
 
-@server.post("/rag/retrieve")
-async def retrieve_rag_data(request: RAGQueryRequest):
-    logger.info(f"--- RAG Request Received ---")
-    logger.info(f"Query: {request.query}")
+
+@app.post("/documentupload")
+async def upload_document(file: UploadFile = File(...)):
+
+    original_name = file.filename or "unknown_file"
+    _, ext = os.path.splitext(original_name)
     
+    file_id = str(uuid.uuid4())
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    temp_file_path = os.path.join(temp_dir, f"{file_id}{ext}")
+
     try:
+        with open(temp_file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+            
+        document_data = {
+            "file_path": temp_file_path,
+            "filename": original_name
+        }
+
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(executor, run_file_ingestion_sync, document_data)
+
+        return {"status": "success", "message": f"File {original_name} uploaded successfully"}
+    
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during upload")
+
+def run_file_ingestion_sync(data):
+    try:
+        asyncio.run(document_processor.extract(data, "FILE"))
+    except Exception as e:
+        logger.error(f"File Worker Error: {str(e)}")
+    finally:
+        if os.path.exists(data["file_path"]):
+            os.remove(data["file_path"])
+            logger.info(f"--- [CLEANUP] Deleted temp file: {data['file_path']} ---")
+
+
+@app.post("/rag/retrieve")
+async def retrieve_rag_data(request: RAGQueryRequest):
+    try:
+
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings([request.query])
         
         results = await qdrant_service.hybrid_search(
+            query_text=request.query,
             query_dense=dense_vecs[0],
             query_sparse=sparse_vecs[0],
             limit=request.top_k,
@@ -86,18 +135,12 @@ async def retrieve_rag_data(request: RAGQueryRequest):
             "data": results 
         }
 
-    except ConnectionError:
-        logger.error("Qdrant connection refused.")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Vector database is currently unreachable."
-        )
     except Exception as e:
         logger.error(f"RAG Retrieval Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred during retrieval: {str(e)}"
+            detail="An error occurred during retrieval."
         )
 
 if __name__ == "__main__":
-    uvicorn.run("app:server", port=9900, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=9900, reload=True)
