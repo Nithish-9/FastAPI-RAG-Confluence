@@ -20,3 +20,4 @@
 
 pipreqs . --force --ignore .venv --encoding utf-8
 ngrok http --domain=pleasant-whippet-select.ngrok-free.app 9900
+taskkill /F /IM python.exe /T

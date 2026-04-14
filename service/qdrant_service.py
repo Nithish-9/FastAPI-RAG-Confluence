@@ -4,6 +4,7 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
 import logging
+import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,24 +21,30 @@ class QdrantService:
         )
         self.collection_name = "enterprise_knowledge_base"
     
-    def init_infrastructure(self):
+    import time
+
+    def init_qdrant(self, retries=5, delay=3):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
-        try:
-            self.client.get_collection(self.collection_name)
-            logger.info(f"--- [Qdrant] Collection '{self.collection_name}' already exists. ---")
-        except UnexpectedResponse as e:
-            if e.status_code == 404:
-                logger.info(f"--- [Qdrant] Collection not found. Creating new schema... ---")
-                self.create_collection()
-            else:
-                raise
+
+        for attempt in range(retries):
+            try:
+                self.client.get_collection(self.collection_name)
+                logger.info("--- [Qdrant] Collection exists ---")
+                return True
+
+            except Exception as e:
+                logger.warning(f"[Qdrant] Attempt {attempt+1} failed: {e}")
+                time.sleep(delay)
+
+        logger.error("--- [Qdrant] Initialization FAILED after retries ---")
+        return False
 
     def create_collection(self):
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=384,
+                    size=768,
                     distance=models.Distance.COSINE
                 )
             },

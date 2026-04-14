@@ -1,7 +1,6 @@
 services:
   rag-server:
     build: .
-    image: ragserver
     container_name: rag_fastapi_app
     restart: always
     ports:
@@ -12,12 +11,12 @@ services:
       - CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL}
       - EMAIL=${EMAIL}
       - API_TOKEN=${API_TOKEN}
-      - HF_HOME=/root/.cache/huggingface
+      - HF_HOME=/app/model_cache
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
     depends_on:
       - qdrant
     volumes:
-      - .:/app
-      - ./model_cache:/root/.cache/huggingface
+      - ./model_cache:/app/model_cache
 
   qdrant:
     image: qdrant/qdrant:latest
