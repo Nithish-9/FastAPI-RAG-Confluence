@@ -18,6 +18,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
 QDRANT_DELAY = int(os.getenv("QDRANT_DELAY", 3))
+QDRANT_COLLECTION = str(os.getenv("QDRANT_COLLECTION","Enterprise_Knowledge_Base"))
 
 class QdrantService:
     def __init__(self):
