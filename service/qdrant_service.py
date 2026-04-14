@@ -23,7 +23,7 @@ class QdrantService:
 
 
 
-    def init_infrastructure(self, retries=5, delay=5):
+    def init_qdrant(self, retries=5, delay=5):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
