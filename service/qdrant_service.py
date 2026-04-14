@@ -13,17 +13,24 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+DENSE_MODEL_DIM = int(str(os.getenv("DENSE_MODEL_DIM")))
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+QDRANT_COLLECTION = str(os.getenv("QDRANT_COLLECTION"))
+QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
+QDRANT_DELAY = int(os.getenv("QDRANT_DELAY", 3))
+
 class QdrantService:
     def __init__(self):
         self.client = QdrantClient(
-            host=os.getenv("QDRANT_HOST", "localhost"), 
-            port=int(os.getenv("QDRANT_PORT", 6333))
+            host=QDRANT_HOST, 
+            port=QDRANT_PORT
         )
-        self.collection_name = "enterprise_knowledge_base"
+        self.collection_name = QDRANT_COLLECTION
 
 
 
-    def init_qdrant(self, retries=5, delay=5):
+    def init_qdrant(self, retries=QDRANT_RETRIES, delay=QDRANT_DELAY):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
@@ -53,7 +60,7 @@ class QdrantService:
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=768,
+                    size=DENSE_MODEL_DIM,
                     distance=models.Distance.COSINE
                 )
             },

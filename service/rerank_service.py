@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from fastembed.rerank.cross_encoder import TextCrossEncoder
+import os
 
 logging.basicConfig(
     level=logging.INFO,
@@ -8,11 +9,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+RERANKER_MODEL_NAME = str(os.getenv("RERANKER_MODEL_NAME"))
 
 class RerankService:
     def __init__(self):
-        self.model_name = "jinaai/jina-reranker-v1-turbo-en" 
-        self.model = None
+        self.model_name = RERANKER_MODEL_NAME
+        self.model:TextCrossEncoder
         self.is_reranker_ready = False
 
     def load_reranker_model(self):

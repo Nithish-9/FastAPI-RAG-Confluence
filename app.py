@@ -19,6 +19,8 @@ from service.rerank_service import rerank_service
 
 load_dotenv()
 
+PORT = int(str(os.getenv("APP_PORT")))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -29,21 +31,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    loop = asyncio.get_running_loop()
     logger.info("--- [SYSTEM] Initializing Components ---")
 
     try:
-        is_qdrant_ready = await loop.run_in_executor(
-            executor, qdrant_service.init_qdrant
-        )
-
-        if not is_qdrant_ready:
-            logger.error("--- [SYSTEM] Qdrant not ready. Shutting down ---")
-            raise RuntimeError("Qdrant initialization failed")
-        
-        system_state.set_vector_db_state(is_qdrant_ready)
-
-        task = asyncio.create_task(preload_models())
+        task = asyncio.create_task(initialize_all_components())
 
         def handle_task_result(task):
             try:
@@ -73,21 +64,26 @@ async def health():
     return system_state.get_status()
 
 
-
-async def preload_models():
+async def initialize_all_components():
     loop = asyncio.get_running_loop()
-    logger.info("--- [SYSTEM] Loading Models in Background ---")
 
     try:
-        is_dense_ready, is_sparse_ready, is_reranker_ready = await asyncio.gather(
+        is_qdrant_ready,is_dense_ready, is_sparse_ready, is_reranker_ready = await asyncio.gather(
+            loop.run_in_executor(executor, qdrant_service.init_qdrant),
             loop.run_in_executor(executor, embed_service.load_dense_model),
             loop.run_in_executor(executor, embed_service.load_sparse_model),
             loop.run_in_executor(executor, rerank_service.load_reranker_model)
         )
 
+        system_state.set_vector_db_state(is_qdrant_ready)
         system_state.set_dense_model_state(is_dense_ready)
         system_state.set_sparse_model_state(is_sparse_ready)
         system_state.set_reranker_model_state(is_reranker_ready)
+
+        if not is_qdrant_ready:
+            logger.error("--- [SYSTEM] Qdrant not ready. ---")
+        else:
+            logger.info("--- [SYSTEM] Qdrant ready ---")
 
         if all([is_dense_ready, is_sparse_ready, is_reranker_ready]):
             logger.info("--- [SYSTEM] All Models Ready ---")
@@ -100,7 +96,7 @@ async def preload_models():
             )
 
     except Exception as e:
-        logger.error(f"--- [SYSTEM] Model preload failed: {e} ---")
+        logger.error(f"--- [SYSTEM] Component initialization failed: {e} ---")
 
 
 
@@ -225,4 +221,4 @@ async def retrieve_rag_data(request: RAGQueryRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=9900, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=PORT, reload=False)
