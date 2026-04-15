@@ -4,6 +4,7 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+load_dotenv()
 
 import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, status
@@ -17,7 +18,6 @@ from core.concurrency import executor
 from core.state import system_state
 from service.rerank_service import rerank_service
 
-load_dotenv()
 
 PORT = int(str(os.getenv("APP_PORT")))
 
