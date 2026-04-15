@@ -24,9 +24,10 @@ class QdrantService:
     def __init__(self):
         self.client = QdrantClient(
             host=QDRANT_HOST, 
-            port=QDRANT_PORT
+            port=QDRANT_PORT,
+            timeout=60
         )
-        self.collection_name = "confluence_rag"
+        self.collection_name = QDRANT_COLLECTION
 
 
 
