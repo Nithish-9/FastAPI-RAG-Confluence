@@ -1,0 +1,67 @@
+networks:
+  rag-net:
+    driver: bridge
+
+services:
+  rag-server:
+    build: .
+    image: rag_fastapi
+    container_name: rag_fastapi_app
+    restart: always
+    networks:
+      - rag-net
+
+    ports:
+      - "${APP_PORT:-9900}:9900"
+
+    shm_size: '2gb'
+
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
+      - QDRANT_RETRIES=${QDRANT_RETRIES}
+      - QDRANT_DELAY=${QDRANT_DELAY}
+      - CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL}
+      - EMAIL=${EMAIL}
+      - API_TOKEN=${API_TOKEN}
+      - APP_PORT=${APP_PORT:-9900}
+      - DENSE_MODEL_NAME=${DENSE_MODEL_NAME}
+      - DENSE_MODEL_DIM=${DENSE_MODEL_DIM}
+      - SPARSE_MODEL_NAME=${SPARSE_MODEL_NAME}
+      - RERANKER_MODEL_NAME=${RERANKER_MODEL_NAME}
+      - HF_HOME=/app/model_cache/huggingface
+      - FASTEMBED_CACHE_PATH=/app/model_cache/fastembed
+      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9900/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    volumes:
+      - ./model_cache:/app/model_cache
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.0
+    container_name: qdrant
+    restart: always
+    networks:
+      - rag-net
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s

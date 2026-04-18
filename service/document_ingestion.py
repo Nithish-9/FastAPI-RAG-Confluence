@@ -1,0 +1,51 @@
+import hashlib
+import asyncio
+import logging
+from langchain_core.documents import Document 
+from service.document_chunking import documentChunker
+from service.generate_embedding import embed_service
+from service.qdrant_service import qdrant_service
+
+logger = logging.getLogger(__name__)
+
+class DocumentIngestionService:
+    async def ingest(self, master_doc: Document, page_id: str) -> None:
+        
+        content = master_doc.page_content
+        current_hash = master_doc.metadata.get("content_hash")
+        
+        if not current_hash:
+            raise ValueError(f"Incomplete metadata: Missing content_hash for {page_id}")
+
+        logger.info(f"--- [Ingestor] Beginning Ingestion for: {page_id} ---")
+
+        try:
+            chunks = await asyncio.to_thread(
+                documentChunker.process_document, 
+                master_doc, 
+                current_hash
+            )
+            
+            if not chunks:
+                logger.warning(f"--- [Ingestor] No chunks generated for {page_id}. Aborting. ---")
+                return
+
+            logger.info(f"--- [Ingestor] Generating embeddings for {len(chunks)} chunks ---")
+            texts = [c.page_content for c in chunks]
+            dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(texts)
+
+            await asyncio.to_thread(qdrant_service.delete_chunks, page_id)
+            
+            await asyncio.to_thread(
+                qdrant_service.upsert_chunks, 
+                chunks, 
+                dense_vecs, 
+                sparse_vecs
+            )
+            
+            logger.info(f"--- [Ingestor] Successfully synchronized {page_id} to Qdrant ---")
+
+        except Exception as e:
+            logger.error(f"--- [Ingestor] Critical Error during ingestion for {page_id}: {e} ---")
+            
+ingestion_service = DocumentIngestionService()
