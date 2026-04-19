@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 class DocumentIngestionService:
     async def ingest(self, master_doc: Document, page_id: str) -> None:
         
-        content = master_doc.page_content
         current_hash = master_doc.metadata.get("content_hash")
         
         if not current_hash:
