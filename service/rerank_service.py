@@ -1,59 +1,59 @@
 import logging
 import asyncio
-from fastembed.rerank.cross_encoder import TextCrossEncoder
+from service.model_services import RerankerFactory
+from schemas.reranker_dto import RerankDocument
 import os
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
 logger = logging.getLogger(__name__)
-
-RERANKER_MODEL_NAME = str(os.getenv("RERANKER_MODEL_NAME"))
+RETRIES = int(os.getenv("RETRIES", 5))
+DELAY = int(os.getenv("DELAY", 3))
 
 class RerankService:
     def __init__(self):
-        self.model_name = RERANKER_MODEL_NAME
-        self.model:TextCrossEncoder
-        self.is_reranker_ready = False
+        self.client = RerankerFactory.get_instance()
 
-    def load_reranker_model(self):
-        logger.info(f"--- [Reranker] Loading {self.model_name} ---")
-        try:
-            self.model = TextCrossEncoder(model_name=self.model_name)
-            self.is_reranker_ready = True
-            logger.info("--- [Reranker] Model Ready ---")
-            return True
-        except Exception as e:
-            logger.error(f"--- [Reranker] Failed to load model: {e} ---")
-            return False
+    async def check_reranker_connectivity(self) -> bool:
+        logger.info("--- [Reranker] Checking connectivity ---")
+        for attempt in range(RETRIES):
+            try:
+                dummy_doc = [RerankDocument(content="test")]
+                await self.client.rerank(query="ping", documents=dummy_doc, top_n=1)
+                logger.info("--- [Reranker] Service Ready ---")
+                return True
+            except Exception as e:
+                logger.warning(f"[Reranker] attempt {attempt + 1} failed: {repr(e)}")
+                if attempt < RETRIES - 1:
+                    await asyncio.sleep(DELAY)
+
+        logger.error("--- [Reranker] Service unreachable after retries ---")
+        return False
 
     async def rerank(self, query: str, documents: list, top_n: int = 5):
-        if not documents or not self.is_reranker_ready:
-            return documents[:top_n]
+        if not documents:
+            return []
 
-        return await asyncio.to_thread(self._run_scoring, query, documents, top_n)
-
-    def _run_scoring(self, query: str, documents: list, top_n: int):
         try:
-            texts = [doc.get('content', '') for doc in documents]
+            rerank_docs = [
+                RerankDocument(content=doc.get('content', '')) 
+                for doc in documents
+            ]
 
-            scores = list(self.model.rerank(query, texts))
-
-            for i, score in enumerate(scores):
-                documents[i]['rerank_score'] = float(score)
-
-            reranked = sorted(
-                documents,
-                key=lambda x: x.get('rerank_score', 0.0),
-                reverse=True
+            response = await self.client.rerank(
+                query=query, 
+                documents=rerank_docs, 
+                top_n=top_n
             )
 
-            return reranked[:top_n]
+            reranked_results = []
+            for item in response.data:
+                original_doc = documents[item.index]
+                original_doc['rerank_score'] = item.rerank_score
+                reranked_results.append(original_doc)
+
+            return reranked_results
 
         except Exception as e:
-            logger.error(f"--- [Reranker] Scoring error: {e} ---")
+            logger.error(f"--- [Reranker] Scoring error: {repr(e)} ---")
             return documents[:top_n]
-
 
 rerank_service = RerankService()

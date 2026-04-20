@@ -1,63 +1,66 @@
-from fastembed import TextEmbedding, SparseTextEmbedding
-from typing import List
 import logging
 import asyncio
-from core.concurrency import executor
+from typing import List
+from service.model_services import DenseModelFactory, SparseModelFactory
 import os
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-
 logger = logging.getLogger(__name__)
 
-DENSE_MODEL_NAME = str(os.getenv("DENSE_MODEL_NAME"))
-SPARSE_MODEL_NAME = str(os.getenv("SPARSE_MODEL_NAME"))
+RETRIES = int(os.getenv("RETRIES", 5))
+DELAY = int(os.getenv("DELAY", 3))
 
 class EmbeddingService:
-    dense_model: TextEmbedding
-    sparse_model: SparseTextEmbedding
-
     def __init__(self):
-        self.is_dense_ready = False
-        self.is_sparse_ready = False
+        self.dense_client = DenseModelFactory.get_instance()
+        self.sparse_client = SparseModelFactory.get_instance()
 
-    def load_dense_model(self):
-        try:
-            logger.info("--- [Embed] Loading Dense Model ---")
-            self.dense_model = TextEmbedding(model_name=DENSE_MODEL_NAME)
-            self.is_dense_ready = True
-            logger.info("--- [Embed] Dense Model Ready ---")
-            return True
-        except Exception as e:
-            logger.error(f"Dense Model load failed: {e}")
-            return False
+    async def check_dense_connectivity(self) -> bool:
+        logger.info("--- [Embed] Checking Dense Service connectivity ---")
+        for attempt in range(RETRIES):
+            try:
+                await self.dense_client.get_dense_embeddings(["ping"])
+                logger.info("--- [Embed] Dense Service Ready ---")
+                return True
+            except Exception as e:
+                logger.warning(f"[Embed] Dense attempt {attempt + 1} failed: {repr(e)}")
+                if attempt < RETRIES - 1:
+                    await asyncio.sleep(DELAY)
+        logger.error("--- [Embed] Dense Service unreachable after retries ---")
+        return False
 
-    def load_sparse_model(self):
-        try:
-            logger.info("--- [Embed] Loading Sparse Model (Splade) ---")
-            self.sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME)
-            self.is_sparse_ready = True
-            logger.info("--- [Embed] Sparse Model Ready ---")
-            return True
-        except Exception as e:
-            logger.error(f"Sparse Model load failed: {e}")
-            return False
+    async def check_sparse_connectivity(self) -> bool:
+        logger.info("--- [Embed] Checking Sparse Service connectivity ---")
+        for attempt in range(RETRIES):
+            try:
+                await self.sparse_client.get_sparse_embeddings(["ping"])
+                logger.info("--- [Embed] Sparse Service Ready ---")
+                return True
+            except Exception as e:
+                logger.warning(f"[Embed] Sparse attempt {attempt + 1} failed: {repr(e)}")
+                if attempt < RETRIES - 1:
+                    await asyncio.sleep(DELAY)
+                    
+        logger.error("--- [Embed] Sparse Service unreachable after retries ---")
+        return False
 
-    def generate_dense(self, texts: List[str]):
-        return list(self.dense_model.embed(texts))
-
-    def generate_sparse(self, texts: List[str]):
-        return list(self.sparse_model.embed(texts))
-    
     async def get_combined_embeddings(self, texts: List[str]):
-        loop = asyncio.get_running_loop()
-        
-        dense_task = loop.run_in_executor(executor, self.generate_dense, texts)
-        sparse_task = loop.run_in_executor(executor, self.generate_sparse, texts)
-        
-        dense_vecs, sparse_vecs = await asyncio.gather(dense_task, sparse_task)
-    
-        return dense_vecs, sparse_vecs
+        try:
+            dense_task = self.dense_client.get_dense_embeddings(texts)
+            sparse_task = self.sparse_client.get_sparse_embeddings(texts)
+            
+            dense_res, sparse_res = await asyncio.gather(dense_task, sparse_task)
+            
+            dense_vectors = [item.embedding for item in dense_res.data]
+            sparse_vectors = [item.embedding for item in sparse_res.data]
+
+            return dense_vectors, sparse_vectors
+
+        except Exception as e:
+            logger.error(f"--- [Embed] Error fetching combined embeddings: {repr(e)} ---")
+            raise e
 
 embed_service = EmbeddingService()

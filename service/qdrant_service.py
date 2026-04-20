@@ -13,12 +13,25 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-DENSE_MODEL_DIM = int(str(os.getenv("DENSE_MODEL_DIM")))
+DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
-QDRANT_DELAY = int(os.getenv("QDRANT_DELAY", 3))
-QDRANT_COLLECTION = str(os.getenv("QDRANT_COLLECTION","Enterprise_Knowledge_Base"))
+RETRIES = int(os.getenv("RETRIES", 5))
+DELAY = int(os.getenv("DELAY", 3))
+
+QDRANT_COLLECTION_BASE = os.getenv("QDRANT_COLLECTION_BASE", "Enterprise_Knowledge_Base")
+FINAL_COLLECTION_NAME = f"{QDRANT_COLLECTION_BASE}_{DENSE_MODEL_DIM}"
+
+QDRANT_INDEXING_THREADS=int(os.getenv("QDRANT_INDEXING_THREADS", 0))
+
+DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
+DISTANCE_METRIC = getattr(models.Distance, DIST_STR)
+
+QDRANT_ON_DISK = os.getenv("QDRANT_ON_DISK", "true").lower() == "true"
+HNSW_M = int(os.getenv("HNSW_M", 16))
+HNSW_EF_CONSTRUCT = int(os.getenv("HNSW_EF_CONSTRUCT", 100))
+HNSW_EF = int(os.getenv("HNSW_EF", 128))
+SPARSE_THRESHOLD = int(os.getenv("SPARSE_FULL_SCAN_THRESHOLD", 1000))
 
 class QdrantService:
     def __init__(self):
@@ -27,11 +40,9 @@ class QdrantService:
             port=QDRANT_PORT,
             timeout=60
         )
-        self.collection_name = QDRANT_COLLECTION
-
-
-
-    def init_qdrant(self, retries=QDRANT_RETRIES, delay=QDRANT_DELAY):
+        self.collection_name = FINAL_COLLECTION_NAME
+    
+    def init_qdrant(self, retries=RETRIES, delay=DELAY):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
@@ -46,7 +57,7 @@ class QdrantService:
                     self.create_collection()
                     return True 
                 else:
-                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {e}")
+                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {repr(e)}")
             
             except Exception as e:
                 logger.warning(f"[Qdrant] Connection attempt {attempt+1} failed. Retrying in {delay}s...")
@@ -57,17 +68,29 @@ class QdrantService:
         return False
 
     def create_collection(self):
+        logger.info(f"--- [Qdrant] Creating collection: {self.collection_name} ---")
+        
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
                     size=DENSE_MODEL_DIM,
-                    distance=models.Distance.COSINE
+                    distance=DISTANCE_METRIC,
+                    on_disk=QDRANT_ON_DISK,
+                    hnsw_config=models.HnswConfigDiff(
+                        m=HNSW_M,
+                        ef_construct=HNSW_EF_CONSTRUCT,
+                        on_disk=QDRANT_ON_DISK,
+                        max_indexing_threads=QDRANT_INDEXING_THREADS
+                    )
                 )
             },
             sparse_vectors_config={
                 "sparse-vector": models.SparseVectorParams(
-                    index=models.SparseIndexParams(on_disk=True)
+                    index=models.SparseIndexParams(
+                        on_disk=QDRANT_ON_DISK,
+                        full_scan_threshold=SPARSE_THRESHOLD
+                    )
                 )
             }
         )
@@ -77,8 +100,7 @@ class QdrantService:
             field_name="page_id",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
-        
-        logger.info(f"--- [Qdrant] Collection and Page ID Index created. ---")
+        logger.info(f"--- [Qdrant] Schema created with HNSW(M={HNSW_M}) and OnDisk={QDRANT_ON_DISK} ---")
     
     def close(self):
         logger.info("--- [Qdrant] Closing client connection... ---")
@@ -121,8 +143,8 @@ class QdrantService:
         points = []
         for i, chunk in enumerate(chunks):
             sparse_dict = models.SparseVector(
-                indices=sparse_vecs[i].indices.tolist(),
-                values=sparse_vecs[i].values.tolist()
+                indices=sparse_vecs[i].indices,
+                values=sparse_vecs[i].values
             )
             
             page_id = chunk.metadata["page_id"]
@@ -132,7 +154,7 @@ class QdrantService:
             points.append(models.PointStruct(
                 id=point_id,
                 vector={
-                    "dense-vector": dense_vecs[i].tolist(), 
+                    "dense-vector": dense_vecs[i], 
                     "sparse-vector": sparse_dict 
                 },
                 payload={**chunk.metadata, "content": chunk.page_content}
@@ -151,7 +173,7 @@ class QdrantService:
             )
         )
 
-    async def hybrid_search(self, query_text, query_dense, query_sparse, limit=5, alpha=0.5, page_id=None, chunk_index=None):
+    async def hybrid_search(self, query_text, query_dense, query_sparse, limit=5, page_id=None, chunk_index=None):
         filter_conditions = []
         if page_id:
             filter_conditions.append(models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id)))
@@ -163,8 +185,8 @@ class QdrantService:
         candidate_limit = limit * 4 
 
         sparse_query = models.SparseVector(
-            indices=query_sparse.indices.tolist(),
-            values=query_sparse.values.tolist()
+            indices=query_sparse.indices,
+            values=query_sparse.values
         )
 
         response = self.client.query_points(
@@ -174,7 +196,8 @@ class QdrantService:
                     query=query_dense,
                     using="dense-vector",
                     limit=candidate_limit,
-                    filter=search_filter
+                    filter=search_filter,
+                    params=models.SearchParams(hnsw_ef=HNSW_EF)
                 ),
                 models.Prefetch(
                     query=sparse_query,
@@ -209,7 +232,7 @@ class QdrantService:
             return final_results
             
         except Exception as e:
-            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {e} ---")
+            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
             return candidates[:limit]
     
 qdrant_service = QdrantService()

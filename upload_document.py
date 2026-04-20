@@ -9,7 +9,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-API_URL = "http://localhost:9900/documentupload" 
+API_URL = "http://localhost:9000/documentupload" 
 
 def upload_document(source_dir):
     if not os.path.isdir(source_dir):
@@ -44,7 +44,7 @@ def upload_document(source_dir):
             logger.error(" Connection Refused: Is the FastAPI server running?")
             return
         except Exception as e:
-            logger.error(f" Error processing {filename}: {str(e)}")
+            logger.error(f" Error processing {filename}: {repr(e)}")
 
     logger.info(f"--- Total files uploaded: {files_processed} ---")
 

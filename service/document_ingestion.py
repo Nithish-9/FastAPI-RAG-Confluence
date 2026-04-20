@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 class DocumentIngestionService:
     async def ingest(self, master_doc: Document, page_id: str) -> None:
         
-        content = master_doc.page_content
         current_hash = master_doc.metadata.get("content_hash")
         
         if not current_hash:
@@ -46,6 +45,6 @@ class DocumentIngestionService:
             logger.info(f"--- [Ingestor] Successfully synchronized {page_id} to Qdrant ---")
 
         except Exception as e:
-            logger.error(f"--- [Ingestor] Critical Error during ingestion for {page_id}: {e} ---")
+            logger.error(f"--- [Ingestor] Critical Error during ingestion for {page_id}: {repr(e)} ---")
             
 ingestion_service = DocumentIngestionService()
