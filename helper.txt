@@ -19,5 +19,8 @@
     basic auth <user name>:<API Token>
 
 pipreqs . --force --ignore .venv --encoding utf-8
-ngrok http --domain=pleasant-whippet-select.ngrok-free.app 9900
 taskkill /F /IM python.exe /T
+
+docker buildx build --platform linux/amd64 -t nithish1/rag:fastapi-amd64 --push .
+docker buildx build --platform linux/amd64 -t nithish1/rag:fastapi-arm64 --push .
+docker buildx imagetools create -t nithish1/rag:fastapi-1.0.0 nithish1/rag:fastapi-amd64 nithish1/rag:fastapi-arm64

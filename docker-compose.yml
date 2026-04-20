@@ -1,57 +1,53 @@
-networks:
-  rag-net:
-    driver: bridge
-
 services:
-  rag-server:
-    build: .
-    image: rag_fastapi
-    container_name: rag_fastapi_app
-    restart: always
+  rag-fastapi:
+    image: nithish1/rag:fastapi-1.0.0
+    container_name: rag-fastapi
+    restart: unless-stopped
     networks:
       - rag-net
-
     ports:
-      - "${APP_PORT:-9900}:9900"
-
-    shm_size: '2gb'
-
+      - "9001:9000"
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - QDRANT_COLLECTION=${QDRANT_COLLECTION}
-      - QDRANT_RETRIES=${QDRANT_RETRIES}
-      - QDRANT_DELAY=${QDRANT_DELAY}
-      - CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL}
-      - EMAIL=${EMAIL}
-      - API_TOKEN=${API_TOKEN}
-      - APP_PORT=${APP_PORT:-9900}
-      - DENSE_MODEL_NAME=${DENSE_MODEL_NAME}
-      - DENSE_MODEL_DIM=${DENSE_MODEL_DIM}
-      - SPARSE_MODEL_NAME=${SPARSE_MODEL_NAME}
-      - RERANKER_MODEL_NAME=${RERANKER_MODEL_NAME}
-      - HF_HOME=/app/model_cache/huggingface
-      - FASTEMBED_CACHE_PATH=/app/model_cache/fastembed
-      - HF_HUB_DISABLE_SYMLINKS_WARNING=1
+      - QDRANT_COLLECTION=Enterprise_Knowledge_Base
+      - QDRANT_ON_DISK=true
+      - HNSW_M=16
+      - HNSW_EF_CONSTRUCT=100
+      - HNSW_EF=128
+      - SPARSE_FULL_SCAN_THRESHOLD=1000
+      - DENSE_DISTANCE=COSINE
+      - QDRANT_INDEXING_THREADS=4
+      - DENSE_HOSTED=false
+      - DENSE_URL=http://mis-dense-bge-small:8000
+      - DENSE_MODEL_DIM=368
+      - SPARSE_HOSTED=false
+      - SPARSE_URL=http://mis-sparse-splade-pp:8000
+      - RERANKER_HOSTED=false
+      - RERANKER_URL=http://mis-reranker-jina:8000
 
     depends_on:
       qdrant:
         condition: service_healthy
+      mis-dense-bge-small:
+        condition: service_healthy
+      mis-sparse-splade-pp:
+        condition: service_healthy
+      mis-reranker-jina:
+        condition: service_healthy
+      
 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9900/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 15s
 
-    volumes:
-      - ./model_cache:/app/model_cache
-
   qdrant:
-    image: qdrant/qdrant:v1.13.0
+    image: qdrant/qdrant:v1.17.0
     container_name: qdrant
-    restart: always
+    restart: unless-stopped
     networks:
       - rag-net
     ports:
@@ -65,3 +61,52 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  
+  mis-dense-bge-small:
+    image: nithish1/mis:dense-bge-small-1.0.0
+    container_name: mis-dense-bge-small
+    ports:
+      - "8001:8000"
+    restart: unless-stopped
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+  
+  mis-sparse-splade-pp:
+    image: nithish1/mis:sparse-splade-pp-1.0.0
+    container_name: mis-sparse-splade-pp
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+  
+  mis-reranker-jina:
+    image: nithish1/mis:reranker-jina-1.0.0
+    container_name: mis-reranker-jina
+    ports:
+      - "8003:8000"
+    restart: unless-stopped
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+networks:
+  rag-net:
+    driver: bridge
