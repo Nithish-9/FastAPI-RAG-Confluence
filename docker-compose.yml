@@ -42,7 +42,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
@@ -54,16 +54,17 @@ services:
       - "6333:6333"
       - "6334:6334"
     environment:
+      - QDRANT_ALLOW_UNSAFE_FS=true
       - QDRANT__CONFIG=config/production.yml
     volumes:
       - ./qdrant_data:/qdrant/storage
       - ./qdrant_config.yml:/qdrant/config/production.yml
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 5s
-      timeout: 5s
+      test: ["CMD", "curl", "-f", "http://localhost:6333/dashboard"]
+      interval: 30s
+      timeout: 10s
       retries: 5
-      start_period: 10s
+      start_period: 30s
   
   mis-dense-bge-small:
     image: nithish1/mis:dense-bge-small-1.0.0
@@ -77,7 +78,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 120s
   
   mis-sparse-splade-pp:
@@ -92,7 +93,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 120s
   
   mis-reranker-jina:
@@ -107,7 +108,7 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 120s
 
 networks:
