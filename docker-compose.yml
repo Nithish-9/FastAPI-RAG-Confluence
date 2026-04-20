@@ -28,7 +28,7 @@ services:
 
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
       mis-dense-bge-small:
         condition: service_healthy
       mis-sparse-splade-pp:
@@ -59,12 +59,6 @@ services:
     volumes:
       - ./qdrant_data:/qdrant/storage
       - ./qdrant_config.yml:/qdrant/config/production.yml
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/dashboard"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
   
   mis-dense-bge-small:
     image: nithish1/mis:dense-bge-small-1.0.0
@@ -77,9 +71,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 60s
       retries: 5
-      start_period: 120s
+      start_period: 180s
   
   mis-sparse-splade-pp:
     image: nithish1/mis:sparse-splade-pp-1.0.0
@@ -92,9 +86,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 60s
       retries: 5
-      start_period: 120s
+      start_period: 300s
   
   mis-reranker-jina:
     image: nithish1/mis:reranker-jina-1.0.0
@@ -107,9 +101,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
-      timeout: 10s
+      timeout: 60s
       retries: 5
-      start_period: 120s
+      start_period: 180s
 
 networks:
   rag-net:
