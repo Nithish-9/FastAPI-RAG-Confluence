@@ -1,7 +1,7 @@
 import logging
 import asyncio
-from .model_services import RerankerFactory
-from ..schemas.schemas import RerankDocument
+from service.model_services import RerankerFactory
+from schemas.reranker_dto import RerankDocument
 import os
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ class RerankService:
                 logger.info("--- [Reranker] Service Ready ---")
                 return True
             except Exception as e:
-                logger.warning(f"[Reranker] attempt {attempt + 1} failed: {e}")
+                logger.warning(f"[Reranker] attempt {attempt + 1} failed: {repr(e)}")
                 if attempt < RETRIES - 1:
                     await asyncio.sleep(DELAY)
 
@@ -53,7 +53,7 @@ class RerankService:
             return reranked_results
 
         except Exception as e:
-            logger.error(f"--- [Reranker] Scoring error: {e} ---")
+            logger.error(f"--- [Reranker] Scoring error: {repr(e)} ---")
             return documents[:top_n]
 
 rerank_service = RerankService()

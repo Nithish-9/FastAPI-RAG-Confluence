@@ -51,7 +51,7 @@ async def extract(document_data: dict, document_type: str) -> None:
             else:
                 await process_documents(UnstructuredFileLoader(file_path), file_name, ext)
         except Exception as e:
-            logger.error(f"--- [Loader] File Loading Error: {e} ---")
+            logger.error(f"--- [Loader] File Loading Error: {repr(e)} ---")
 
 async def process_confluence_page(page_id: str):
     loader = ConfluenceLoader(
@@ -81,7 +81,7 @@ async def process_confluence_page(page_id: str):
 
             await ingestion_service.ingest(master_doc, page_id)
     except Exception as e:
-        logger.error(f"--- [Loader] Confluence Load Error: {e} ---")
+        logger.error(f"--- [Loader] Confluence Load Error: {repr(e)} ---")
 
 async def process_documents(loader, file_name, file_extension):
     try:
@@ -106,4 +106,4 @@ async def process_documents(loader, file_name, file_extension):
 
             await ingestion_service.ingest(master_doc, page_id)
     except Exception as e:
-        logger.error(f"--- [Loader] {file_extension} Load Error: {e} ---")
+        logger.error(f"--- [Loader] {file_extension} Load Error: {repr(e)} ---")

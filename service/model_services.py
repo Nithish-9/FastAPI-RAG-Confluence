@@ -2,14 +2,17 @@ import os
 import httpx
 from abc import ABC, abstractmethod
 from typing import List, Union
-from ..schemas.schemas import (
-    DenseEmbedRequest, DenseEmbedResponse, 
-    SparseEmbedRequest, SparseEmbedResponse,
-    RerankRequest, RerankResponse
-)
+
+from schemas.dense_dto import (DenseEmbedRequest, DenseEmbedResponse)
+from schemas.sparse_dto import (SparseEmbedRequest, SparseEmbedResponse,)
+from schemas.reranker_dto import (RerankRequest, RerankResponse)
+
 import urllib3
+import logging
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+logger = logging.getLogger(__name__)
 
 class DenseModelInterface(ABC):
     @abstractmethod
@@ -25,8 +28,9 @@ class BaseDenseModel(DenseModelInterface):
 
     async def _make_call(self, url: str, payload: DenseEmbedRequest) -> DenseEmbedResponse:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=60.0,verify=False) as client:
+        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
             response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
+            logger.info(f"Raw Response from {url}: {response.text}")
             response.raise_for_status()
             return DenseEmbedResponse(**response.json())
 
@@ -62,8 +66,9 @@ class BaseSparseModel(SparseModelInterface):
 
     async def _make_call(self, url: str, payload: SparseEmbedRequest) -> SparseEmbedResponse:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=60.0,verify=False) as client:
+        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
             response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
+            logger.info(f"Raw Response from {url}: {response.text}")
             response.raise_for_status()
             return SparseEmbedResponse(**response.json())
 
@@ -99,8 +104,9 @@ class BaseReranker(RerankerInterface):
 
     async def _make_call(self, url: str, payload: RerankRequest) -> RerankResponse:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=60.0,verify=False) as client:
+        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
             response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
+            logger.info(f"Raw Response from {url}: {response.text}")
             response.raise_for_status()
             return RerankResponse(**response.json())
 

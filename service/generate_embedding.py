@@ -1,9 +1,13 @@
 import logging
 import asyncio
 from typing import List
-from .model_services import DenseModelFactory, SparseModelFactory
+from service.model_services import DenseModelFactory, SparseModelFactory
 import os
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 RETRIES = int(os.getenv("RETRIES", 5))
@@ -22,7 +26,7 @@ class EmbeddingService:
                 logger.info("--- [Embed] Dense Service Ready ---")
                 return True
             except Exception as e:
-                logger.warning(f"[Embed] Dense attempt {attempt + 1} failed: {e}")
+                logger.warning(f"[Embed] Dense attempt {attempt + 1} failed: {repr(e)}")
                 if attempt < RETRIES - 1:
                     await asyncio.sleep(DELAY)
         logger.error("--- [Embed] Dense Service unreachable after retries ---")
@@ -36,7 +40,7 @@ class EmbeddingService:
                 logger.info("--- [Embed] Sparse Service Ready ---")
                 return True
             except Exception as e:
-                logger.warning(f"[Embed] Sparse attempt {attempt + 1} failed: {e}")
+                logger.warning(f"[Embed] Sparse attempt {attempt + 1} failed: {repr(e)}")
                 if attempt < RETRIES - 1:
                     await asyncio.sleep(DELAY)
                     
@@ -56,7 +60,7 @@ class EmbeddingService:
             return dense_vectors, sparse_vectors
 
         except Exception as e:
-            logger.error(f"--- [Embed] Error fetching combined embeddings: {e} ---")
+            logger.error(f"--- [Embed] Error fetching combined embeddings: {repr(e)} ---")
             raise e
 
 embed_service = EmbeddingService()

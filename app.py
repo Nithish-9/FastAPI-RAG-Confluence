@@ -10,7 +10,7 @@ from core.config_validator import validate_config
 try:
     validate_config()
 except Exception as e:
-    print(f"FATAL: Configuration Error -> {e}")
+    print(f"FATAL: Configuration Error -> {repr(e)}")
     exit(1)
 
 import uvicorn
@@ -18,7 +18,7 @@ from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
 from service import document_processor
-from models.rag_model import RAGQueryRequest
+from schemas.rag_dto import RAGQueryRequest
 from service.generate_embedding import embed_service
 from service.qdrant_service import qdrant_service
 from core.concurrency import executor
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
             task.result()
             logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
         except Exception as e:
-            logger.error(f"--- [SYSTEM] CRITICAL: Background initialization failed: {e} ---")
+            logger.error(f"--- [SYSTEM] CRITICAL: Background initialization failed: {repr(e)} ---")
 
     init_task.add_done_callback(on_init_complete)
     logger.info(f"--- [SYSTEM] Startup sequence initiated (Port: {PORT}) ---")
@@ -114,7 +114,7 @@ def run_worker_task(data, source_type):
     try:
         asyncio.run(document_processor.extract(data, source_type))
     except Exception as e:
-        logger.error(f"Worker Error [{source_type}]: {e}")
+        logger.error(f"Worker Error [{source_type}]: {repr(e)}")
     finally:
         if source_type == "FILE" and os.path.exists(data.get("file_path", "")):
             try:
@@ -140,7 +140,7 @@ async def retrieve_rag_data(request: RAGQueryRequest):
         )
         return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
-        logger.error(f"RAG Error: {e}")
+        logger.error(f"RAG Error: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

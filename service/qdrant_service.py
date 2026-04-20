@@ -57,7 +57,7 @@ class QdrantService:
                     self.create_collection()
                     return True 
                 else:
-                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {e}")
+                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {repr(e)}")
             
             except Exception as e:
                 logger.warning(f"[Qdrant] Connection attempt {attempt+1} failed. Retrying in {delay}s...")
@@ -143,8 +143,8 @@ class QdrantService:
         points = []
         for i, chunk in enumerate(chunks):
             sparse_dict = models.SparseVector(
-                indices=sparse_vecs[i].indices.tolist(),
-                values=sparse_vecs[i].values.tolist()
+                indices=sparse_vecs[i].indices,
+                values=sparse_vecs[i].values
             )
             
             page_id = chunk.metadata["page_id"]
@@ -154,7 +154,7 @@ class QdrantService:
             points.append(models.PointStruct(
                 id=point_id,
                 vector={
-                    "dense-vector": dense_vecs[i].tolist(), 
+                    "dense-vector": dense_vecs[i], 
                     "sparse-vector": sparse_dict 
                 },
                 payload={**chunk.metadata, "content": chunk.page_content}
@@ -185,8 +185,8 @@ class QdrantService:
         candidate_limit = limit * 4 
 
         sparse_query = models.SparseVector(
-            indices=query_sparse.indices.tolist(),
-            values=query_sparse.values.tolist()
+            indices=query_sparse.indices,
+            values=query_sparse.values
         )
 
         response = self.client.query_points(
@@ -232,7 +232,7 @@ class QdrantService:
             return final_results
             
         except Exception as e:
-            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {e} ---")
+            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
             return candidates[:limit]
     
 qdrant_service = QdrantService()
