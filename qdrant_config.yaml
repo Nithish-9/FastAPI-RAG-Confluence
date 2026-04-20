@@ -1,4 +1,0 @@
-log_level: INFO
-storage:
-  performance:
-    max_optimization_threads: 2

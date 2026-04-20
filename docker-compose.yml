@@ -53,8 +53,11 @@ services:
     ports:
       - "6333:6333"
       - "6334:6334"
+    environment:
+      - QDRANT__CONFIG=config/production.yaml
     volumes:
       - ./qdrant_data:/qdrant/storage
+      - ./qdrant_config.yaml:/qdrant/config/production.yaml
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
       interval: 5s

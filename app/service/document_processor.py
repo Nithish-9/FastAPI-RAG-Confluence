@@ -11,6 +11,7 @@ from langchain_community.document_loaders import (
 from service.document_ingestion import ingestion_service 
 from service.qdrant_service import qdrant_service
 import hashlib
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
