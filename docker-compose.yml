@@ -73,7 +73,7 @@ services:
       interval: 30s
       timeout: 60s
       retries: 5
-      start_period: 180s
+      start_period: 600s
   
   mis-sparse-splade-pp:
     image: nithish1/mis:sparse-splade-pp-1.0.0
@@ -88,7 +88,7 @@ services:
       interval: 30s
       timeout: 60s
       retries: 5
-      start_period: 300s
+      start_period: 600s
   
   mis-reranker-jina:
     image: nithish1/mis:reranker-jina-1.0.0
@@ -103,7 +103,7 @@ services:
       interval: 30s
       timeout: 60s
       retries: 5
-      start_period: 180s
+      start_period: 600s
 
 networks:
   rag-net:
