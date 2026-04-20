@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 from core.config_validator import validate_config
+
 try:
     validate_config()
 except Exception as e:
@@ -17,11 +18,10 @@ import uvicorn
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
-from service import document_processor
+from service import document_processor 
 from schemas.rag_dto import RAGQueryRequest
 from service.generate_embedding import embed_service
 from service.qdrant_service import qdrant_service
-from core.concurrency import executor
 from core.state import system_state
 from service.rerank_service import rerank_service
 
@@ -37,41 +37,27 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("--- [SYSTEM] Starting API Server ---")
     
-    init_task = asyncio.create_task(initialize_all_components())
-
-    def on_init_complete(task):
-        try:
-            task.result()
-            logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
-        except Exception as e:
-            logger.error(f"--- [SYSTEM] CRITICAL: Background initialization failed: {repr(e)} ---")
-
-    init_task.add_done_callback(on_init_complete)
-    logger.info(f"--- [SYSTEM] Startup sequence initiated (Port: {PORT}) ---")
-    
+    asyncio.create_task(initialize_all_components())
     yield
 
     logger.info("--- [SYSTEM] Shutting down ---")
     qdrant_service.close()
-    executor.shutdown(wait=True)
 
 app = FastAPI(lifespan=lifespan)
 
 async def initialize_all_components():
-    loop = asyncio.get_running_loop()
-    
     results = await asyncio.gather(
-        loop.run_in_executor(executor, qdrant_service.init_qdrant),
+        qdrant_service.init_qdrant(),
         embed_service.check_dense_connectivity(),  
         embed_service.check_sparse_connectivity(), 
         rerank_service.check_reranker_connectivity(),    
         return_exceptions=True 
     )
 
-    is_qdrant = results[0] if not isinstance(results[0], Exception) else False
-    is_dense  = results[1] if not isinstance(results[1], Exception) else False
-    is_sparse = results[2] if not isinstance(results[2], Exception) else False
-    is_rerank = results[3] if not isinstance(results[3], Exception) else False
+    is_qdrant = results[0] is True
+    is_dense  = results[1] is True
+    is_sparse = results[2] is True
+    is_rerank = results[3] is True
 
     system_state.set_vector_db_state(is_qdrant)
     system_state.set_dense_model_state(is_dense)
@@ -79,53 +65,61 @@ async def initialize_all_components():
     system_state.set_reranker_model_state(is_rerank)
 
     if not all([is_qdrant, is_dense, is_sparse, is_rerank]):
-        error_msg = f"Partial Success - Q:{is_qdrant} D:{is_dense} S:{is_sparse} R:{is_rerank}"
-        logger.error(f"Initialization Failed: {error_msg}")
+        logger.error(f"Initialization Partial: Q:{is_qdrant} D:{is_dense} S:{is_sparse} R:{is_rerank}")
+    else:
+        logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
 
 @app.get("/health")
 async def health():
     return system_state.get_status()
 
+
 @app.post("/webhook/confluence")
 async def ingest_confluence_webhook(request: Request):
     data = await request.json()
-    asyncio.get_running_loop().run_in_executor(executor, run_worker_task, data, "CONFLUENCE")
+    asyncio.create_task(background_extraction_task(data, "CONFLUENCE"))
     return {"status": "success", "message": "Confluence ingestion queued"}
 
 @app.post("/documentupload")
 async def upload_document(file: UploadFile = File(...)):
     if not system_state.is_system_ready():
-        return JSONResponse(status_code=503, content={"status": "loading", "message": "Services unavailable or warming up"})
+        return JSONResponse(status_code=503, content={"status": "loading", "message": "Services unavailable"})
 
     file_id = str(uuid.uuid4())
-    temp_path = os.path.join("temp_uploads", f"{file_id}{os.path.splitext(file.filename or '')[1]}")
-    os.makedirs("temp_uploads", exist_ok=True)
+    temp_dir = "temp_uploads"
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"{file_id}{os.path.splitext(file.filename or '')[1]}")
 
     with open(temp_path, "wb") as buffer:
         while chunk := await file.read(1024 * 1024):
             buffer.write(chunk)
 
     doc_data = {"file_path": temp_path, "filename": file.filename}
-    asyncio.get_running_loop().run_in_executor(executor, run_worker_task, doc_data, "FILE")
+    
+    asyncio.create_task(background_extraction_task(doc_data, "FILE"))
     
     return {"status": "success", "message": f"File {file.filename} queued"}
 
-def run_worker_task(data, source_type):
+async def background_extraction_task(data, source_type):
     try:
-        asyncio.run(document_processor.extract(data, source_type))
+        await document_processor.extract(data, source_type)
     except Exception as e:
         logger.error(f"Worker Error [{source_type}]: {repr(e)}")
     finally:
-        if source_type == "FILE" and os.path.exists(data.get("file_path", "")):
-            try:
-                os.remove(data["file_path"])
-                logger.info(f"Cleanup: Removed {data['file_path']}")
-            except: pass
+        if source_type == "FILE":
+            f_path = data.get("file_path")
+            if f_path and os.path.exists(f_path):
+                try:
+                    os.remove(f_path)
+                    logger.info(f"Cleanup: Removed {f_path}")
+                except Exception as e:
+                    logger.warning(f"Cleanup Failed for {f_path}: {e}")
+
 
 @app.post("/rag/retrieve")
 async def retrieve_rag_data(request: RAGQueryRequest):
     if not system_state.is_system_ready():
-        raise HTTPException(status_code=503, detail="Search infrastructure is not fully ready")
+        raise HTTPException(status_code=503, detail="Search infrastructure warming up")
 
     try:
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings([request.query])
@@ -141,7 +135,7 @@ async def retrieve_rag_data(request: RAGQueryRequest):
         return {"status": "success", "count": len(results), "data": results}
     except Exception as e:
         logger.error(f"RAG Error: {repr(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An error occurred during retrieval")
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False, workers=1)

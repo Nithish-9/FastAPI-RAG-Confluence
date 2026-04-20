@@ -1,5 +1,6 @@
 services:
   rag-fastapi:
+    init: true
     image: nithish1/rag:fastapi-1.0.0
     container_name: rag-fastapi
     restart: unless-stopped
@@ -18,13 +19,28 @@ services:
       - SPARSE_FULL_SCAN_THRESHOLD=1000
       - DENSE_DISTANCE=COSINE
       - QDRANT_INDEXING_THREADS=4
+
       - DENSE_HOSTED=false
       - DENSE_URL=http://mis-dense-bge-small:8000
-      - DENSE_MODEL_DIM=368
+      - DENSE_MODEL_DIM=384
       - SPARSE_HOSTED=false
       - SPARSE_URL=http://mis-sparse-splade-pp:8000
       - RERANKER_HOSTED=false
       - RERANKER_URL=http://mis-reranker-jina:8000
+      - EMBED_BATCH_SIZE=32
+      - MAX_RERANK_CANDIDATES=100
+
+      - HTTP_TOTAL_TIMEOUT=120.0
+      - HTTP_CONNECT_TIMEOUT=10.0
+      - HTTP_MAX_CONNECTIONS=100
+      - HTTP_MAX_KEEPALIVE=20
+      - HTTP_VERIFY_SSL=false
+
+      - INFERENCE_MAX_RETRIES=3
+      - INFERENCE_RETRY_MIN_WAIT=2
+      - INFERENCE_RETRY_MAX_WAIT=10
+      
+      - QDRANT_RETRIES=5
 
     depends_on:
       qdrant:
@@ -45,6 +61,7 @@ services:
       start_period: 30s
 
   qdrant:
+    init: true
     image: qdrant/qdrant:v1.17.0
     container_name: qdrant
     restart: unless-stopped
@@ -61,6 +78,7 @@ services:
       - ./qdrant_config.yml:/qdrant/config/production.yml
   
   mis-dense-bge-small:
+    init: true
     image: nithish1/mis:dense-bge-small-1.0.0
     container_name: mis-dense-bge-small
     ports:
@@ -76,6 +94,7 @@ services:
       start_period: 600s
   
   mis-sparse-splade-pp:
+    init: true
     image: nithish1/mis:sparse-splade-pp-1.0.0
     container_name: mis-sparse-splade-pp
     ports:
@@ -91,6 +110,7 @@ services:
       start_period: 600s
   
   mis-reranker-jina:
+    init: true
     image: nithish1/mis:reranker-jina-1.0.0
     container_name: mis-reranker-jina
     ports:

@@ -1,5 +1,6 @@
 import uuid
 import os
+import asyncio 
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
@@ -10,20 +11,17 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-
 logger = logging.getLogger(__name__)
 
 DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-RETRIES = int(os.getenv("RETRIES", 5))
-DELAY = int(os.getenv("DELAY", 3))
+QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
 
 QDRANT_COLLECTION_BASE = os.getenv("QDRANT_COLLECTION_BASE", "Enterprise_Knowledge_Base")
 FINAL_COLLECTION_NAME = f"{QDRANT_COLLECTION_BASE}_{DENSE_MODEL_DIM}"
 
-QDRANT_INDEXING_THREADS=int(os.getenv("QDRANT_INDEXING_THREADS", 0))
-
+QDRANT_INDEXING_THREADS = int(os.getenv("QDRANT_INDEXING_THREADS", 0))
 DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
 DISTANCE_METRIC = getattr(models.Distance, DIST_STR)
 
@@ -42,34 +40,36 @@ class QdrantService:
         )
         self.collection_name = FINAL_COLLECTION_NAME
     
-    def init_qdrant(self, retries=RETRIES, delay=DELAY):
+    async def init_qdrant(self, retries=QDRANT_RETRIES):
+        return await asyncio.to_thread(self._init_qdrant_sync, retries)
+
+
+    def _init_qdrant_sync(self, retries):
         logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
             try:
                 self.client.get_collection(self.collection_name)
-                logger.info(f"--- [Qdrant] Collection '{self.collection_name}' already exists. ---")
+                logger.info(f"--- [Qdrant] Connection successful. ---")
                 return True 
-
             except UnexpectedResponse as e:
                 if e.status_code == 404:
-                    logger.info(f"--- [Qdrant] Collection not found. Creating new schema... ---")
                     self.create_collection()
                     return True 
-                else:
-                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {repr(e)}")
-            
+                raise e
             except Exception as e:
-                logger.warning(f"[Qdrant] Connection attempt {attempt+1} failed. Retrying in {delay}s...")
-            
-            time.sleep(delay)
-
-        logger.error("--- [Qdrant] Initialization FAILED: Could not connect to database. ---")
+                wait = min(2 ** (attempt + 1), 30) 
+                
+                if attempt < retries - 1:
+                    logger.warning(f"[Qdrant] Attempt {attempt+1} failed. Retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"[Qdrant] Max retries reached. Connection failed.")
+        
         return False
 
     def create_collection(self):
         logger.info(f"--- [Qdrant] Creating collection: {self.collection_name} ---")
-        
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
@@ -94,7 +94,6 @@ class QdrantService:
                 )
             }
         )
-
         self.client.create_payload_index(
             collection_name=self.collection_name,
             field_name="page_id",
@@ -105,7 +104,7 @@ class QdrantService:
     def close(self):
         logger.info("--- [Qdrant] Closing client connection... ---")
         self.client.close()
-    
+
     def check_doc_changed(self, page_id: str) -> bool:
         results, _ = self.client.scroll(
             collection_name=self.collection_name,
@@ -128,14 +127,11 @@ class QdrantService:
             with_payload=True,
             with_vectors=False
         )
-        
         if not results:
             return True 
-        
         payload = results[0].payload
         if payload is None:
             return True
-
         old_hash = payload.get("content_hash")
         return old_hash != new_hash
 
@@ -146,7 +142,6 @@ class QdrantService:
                 indices=sparse_vecs[i].indices,
                 values=sparse_vecs[i].values
             )
-            
             page_id = chunk.metadata["page_id"]
             idx = chunk.metadata["chunk_index"]
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{page_id}_{idx}"))
@@ -159,11 +154,7 @@ class QdrantService:
                 },
                 payload={**chunk.metadata, "content": chunk.page_content}
             ))
-
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points
-        )
+        self.client.upsert(collection_name=self.collection_name, points=points)
 
     def delete_chunks(self, page_id: str):
         self.client.delete(
@@ -181,7 +172,6 @@ class QdrantService:
             filter_conditions.append(models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index)))
 
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-
         candidate_limit = limit * 4 
 
         sparse_query = models.SparseVector(
@@ -189,26 +179,31 @@ class QdrantService:
             values=query_sparse.values
         )
 
-        response = self.client.query_points(
-            collection_name=self.collection_name,
-            prefetch=[
-                models.Prefetch(
-                    query=query_dense,
-                    using="dense-vector",
-                    limit=candidate_limit,
-                    filter=search_filter,
-                    params=models.SearchParams(hnsw_ef=HNSW_EF)
-                ),
-                models.Prefetch(
-                    query=sparse_query,
-                    using="sparse-vector",
-                    limit=candidate_limit,
-                    filter=search_filter
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=candidate_limit
-        )
+        try:
+            response = await asyncio.to_thread(
+                self.client.query_points,
+                collection_name=self.collection_name,
+                prefetch=[
+                    models.Prefetch(
+                        query=query_dense,
+                        using="dense-vector",
+                        limit=candidate_limit,
+                        filter=search_filter,
+                        params=models.SearchParams(hnsw_ef=HNSW_EF)
+                    ),
+                    models.Prefetch(
+                        query=sparse_query,
+                        using="sparse-vector",
+                        limit=candidate_limit,
+                        filter=search_filter
+                    ),
+                ],
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=candidate_limit
+            )
+        except Exception as e:
+            logger.error(f"--- [Qdrant] Search failed to execute: {repr(e)} ---")
+            return []
 
         candidates = []
         for point in response.points:
@@ -223,14 +218,11 @@ class QdrantService:
             return []
 
         try:
-            
-            final_results = await rerank_service.rerank(
+            return await rerank_service.rerank(
                 query=query_text, 
                 documents=candidates, 
                 top_n=limit
             )
-            return final_results
-            
         except Exception as e:
             logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
             return candidates[:limit]
