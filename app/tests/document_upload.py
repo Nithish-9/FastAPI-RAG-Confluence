@@ -9,7 +9,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-API_URL = "http://localhost:9000/documentupload" 
+API_URL = "http://localhost:9001/documentupload" 
 
 def upload_document(source_dir):
     if not os.path.isdir(source_dir):
