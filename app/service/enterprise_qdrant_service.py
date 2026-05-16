@@ -1,11 +1,12 @@
 import uuid
 import os
 import asyncio 
+import logging
+import time
+
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
-import logging
-import time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,9 +18,10 @@ DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
+QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
 
-QDRANT_COLLECTION_BASE = os.getenv("QDRANT_COLLECTION_BASE", "Enterprise_Knowledge_Base")
-FINAL_COLLECTION_NAME = f"{QDRANT_COLLECTION_BASE}_{DENSE_MODEL_DIM}"
+ENTERPRISE_COLLECTION = os.getenv("ENTERPRISE_COLLECTION", "Enterprise_Knowledge_Base")
+FINAL_COLLECTION_NAME = f"{ENTERPRISE_COLLECTION}_{DENSE_MODEL_DIM}"
 
 QDRANT_INDEXING_THREADS = int(os.getenv("QDRANT_INDEXING_THREADS", 0))
 DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
@@ -31,7 +33,7 @@ HNSW_EF_CONSTRUCT = int(os.getenv("HNSW_EF_CONSTRUCT", 100))
 HNSW_EF = int(os.getenv("HNSW_EF", 128))
 SPARSE_THRESHOLD = int(os.getenv("SPARSE_FULL_SCAN_THRESHOLD", 1000))
 
-class QdrantService:
+class EnterpriseQdrantService:
     def __init__(self):
         self.client = QdrantClient(
             host=QDRANT_HOST, 
@@ -40,36 +42,39 @@ class QdrantService:
         )
         self.collection_name = FINAL_COLLECTION_NAME
     
-    async def init_qdrant(self, retries=QDRANT_RETRIES):
-        return await asyncio.to_thread(self._init_qdrant_sync, retries)
+    async def init_collection(self, retries=QDRANT_RETRIES):
+        return await asyncio.to_thread(self._init_collection_sync, retries)
 
-
-    def _init_qdrant_sync(self, retries):
-        logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
+    def _init_collection_sync(self, retries):
+        logger.info(f"--- [EnterpriseQdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
             try:
                 self.client.get_collection(self.collection_name)
-                logger.info(f"--- [Qdrant] Connection successful. ---")
+                logger.info(
+                    f"--- [EnterpriseQdrant] Collection '{self.collection_name}' exists. ---"
+                )
                 return True 
+            
             except UnexpectedResponse as e:
                 if e.status_code == 404:
-                    self.create_collection()
+                    logger.info("--- [EnterpriseQdrant] Creating new collection... ---")
+                    self._create_collection()
                     return True 
                 raise e
             except Exception as e:
                 wait = min(2 ** (attempt + 1), 30) 
                 
                 if attempt < retries - 1:
-                    logger.warning(f"[Qdrant] Attempt {attempt+1} failed. Retrying in {wait}s...")
+                    logger.warning(f"[EnterpriseQdrant] Attempt {attempt+1} failed. Retrying in {wait}s...")
                     time.sleep(wait)
                 else:
-                    logger.error(f"[Qdrant] Max retries reached. Connection failed.")
+                    logger.error(f"[EnterpriseQdrant] Max retries reached. Connection failed.")
         
         return False
 
-    def create_collection(self):
-        logger.info(f"--- [Qdrant] Creating collection: {self.collection_name} ---")
+    def _create_collection(self):
+        logger.info(f"--- [EnterpriseQdrant] Creating collection: {self.collection_name} ---")
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
@@ -99,10 +104,14 @@ class QdrantService:
             field_name="page_id",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
-        logger.info(f"--- [Qdrant] Schema created with HNSW(M={HNSW_M}) and OnDisk={QDRANT_ON_DISK} ---")
-    
+        logger.info(f"--- [EnterpriseQdrant] Schema created with HNSW(M={HNSW_M}) and OnDisk={QDRANT_ON_DISK} ---")
+        logger.info(
+            f"--- [EnterpriseQdrant] Collection created with index on "
+            f"[page_id] ---"
+        )
+
     def close(self):
-        logger.info("--- [Qdrant] Closing client connection... ---")
+        logger.info("--- [EnterpriseQdrant] Closing client connection... ---")
         self.client.close()
 
     def check_doc_changed(self, page_id: str) -> bool:
@@ -180,7 +189,8 @@ class QdrantService:
         )
 
         try:
-            response = await asyncio.to_thread(
+            async with asyncio.timeout(QDRANT_TIMEOUT):
+                response = await asyncio.to_thread(
                 self.client.query_points,
                 collection_name=self.collection_name,
                 prefetch=[
@@ -201,8 +211,11 @@ class QdrantService:
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 limit=candidate_limit
             )
+        except TimeoutError:
+            logger.error(f"--- [EnterpriseQdrant] Search timed out after {QDRANT_TIMEOUT}s ---")
+            return []
         except Exception as e:
-            logger.error(f"--- [Qdrant] Search failed to execute: {repr(e)} ---")
+            logger.error(f"--- [EnterpriseQdrant] Search failed to execute: {repr(e)} ---")
             return []
 
         candidates = []
@@ -224,7 +237,7 @@ class QdrantService:
                 top_n=limit
             )
         except Exception as e:
-            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
+            logger.error(f"--- [EnterpriseQdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
             return candidates[:limit]
     
-qdrant_service = QdrantService()
+enterprise_qdrant_service = EnterpriseQdrantService()

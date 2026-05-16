@@ -3,7 +3,7 @@ import logging
 from langchain_core.documents import Document 
 from service.document_chunking import documentChunker
 from service.generate_embedding import embed_service
-from service.qdrant_service import qdrant_service
+from app.service.enterprise_qdrant_service import qdrant_service
 
 logging.basicConfig(
     level=logging.INFO,

@@ -10,7 +10,7 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader
 )
 from service.document_ingestion import ingestion_service 
-from service.qdrant_service import qdrant_service
+from app.service.enterprise_qdrant_service import qdrant_service
 
 logging.basicConfig(
     level=logging.INFO,

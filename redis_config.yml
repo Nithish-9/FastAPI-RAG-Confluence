@@ -1,0 +1,33 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  worker:
+    build: .
+    command: celery -A workers.ingest_worker worker
+             --queues ingestion_high,ingestion
+             --concurrency 4
+             --max-tasks-per-child 100
+             --loglevel info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - api
+    deploy:
+      replicas: 2   # 2 workers × 4 concurrency = 8 parallel file processings
+
+  flower:
+    image: mher/flower
+    command: celery flower --broker=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:

@@ -11,7 +11,8 @@ services:
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - QDRANT_COLLECTION=Enterprise_Knowledge_Base
+      - ENTERPRISE_COLLECTION=Enterprise_Knowledge_Base
+      - WORKSPACE_COLLECTION=Workspace_Knowledge_Base
       - QDRANT_ON_DISK=true
       - HNSW_M=16
       - HNSW_EF_CONSTRUCT=100
@@ -39,10 +40,89 @@ services:
       - INFERENCE_MAX_RETRIES=3
       - INFERENCE_RETRY_MIN_WAIT=2
       - INFERENCE_RETRY_MAX_WAIT=10
-      
+
       - QDRANT_RETRIES=5
+      - QDRANT_TIMEOUT=60
+
+      - REDIS_BROKER_URL=redis://redis:6379/0
+      - REDIS_BACKEND_URL=redis://redis:6379/1
 
     depends_on:
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      mis-dense-bge-small:
+        condition: service_healthy
+      mis-sparse-splade-pp:
+        condition: service_healthy
+      mis-reranker-jina:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - shared_uploads:/shared/uploads
+
+  rag-worker:
+    init: true
+    image: nithish1/rag:fastapi-1.2.0  
+    container_name: rag-worker
+    restart: unless-stopped
+    networks:
+      - rag-net
+    command: >
+      celery -A workers.ingest_worker worker
+      --queues ingestion
+      --concurrency 4
+      --max-tasks-per-child 100
+      --loglevel info
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - ENTERPRISE_COLLECTION=Enterprise_Knowledge_Base
+      - WORKSPACE_COLLECTION=Workspace_Knowledge_Base
+      - QDRANT_ON_DISK=true
+      - HNSW_M=16
+      - HNSW_EF_CONSTRUCT=100
+      - HNSW_EF=128
+      - SPARSE_FULL_SCAN_THRESHOLD=1000
+      - DENSE_DISTANCE=COSINE
+      - QDRANT_INDEXING_THREADS=4
+
+      - DENSE_HOSTED=false
+      - DENSE_URL=http://mis-dense-bge-small:8000
+      - DENSE_MODEL_DIM=384
+      - SPARSE_HOSTED=false
+      - SPARSE_URL=http://mis-sparse-splade-pp:8000
+      - RERANKER_HOSTED=false
+      - RERANKER_URL=http://mis-reranker-jina:8000
+      - EMBED_BATCH_SIZE=32
+      - MAX_RERANK_CANDIDATES=100
+
+      - HTTP_TOTAL_TIMEOUT=120.0
+      - HTTP_CONNECT_TIMEOUT=10.0
+      - HTTP_MAX_CONNECTIONS=100
+      - HTTP_MAX_KEEPALIVE=20
+      - HTTP_VERIFY_SSL=false
+
+      - INFERENCE_MAX_RETRIES=3
+      - INFERENCE_RETRY_MIN_WAIT=2
+      - INFERENCE_RETRY_MAX_WAIT=10
+
+      - QDRANT_RETRIES=5
+      - QDRANT_TIMEOUT=60
+
+      - REDIS_BROKER_URL=redis://redis:6379/0
+      - REDIS_BACKEND_URL=redis://redis:6379/1
+
+    depends_on:
+      redis:
+        condition: service_healthy
       qdrant:
         condition: service_started
       mis-dense-bge-small:
@@ -51,14 +131,42 @@ services:
         condition: service_healthy
       mis-reranker-jina:
         condition: service_healthy
-      
 
+    deploy:
+      replicas: 2 
+    volumes:
+      - shared_uploads:/shared/uploads
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - rag-net
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes 
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
-      interval: 30s
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
       timeout: 5s
-      retries: 3
-      start_period: 30s
+      retries: 5
+      start_period: 10s
+
+  flower:
+    image: mher/flower:2.0
+    container_name: flower
+    restart: unless-stopped
+    networks:
+      - rag-net
+    ports:
+      - "5555:5555"
+    command: celery flower --broker=redis://redis:6379/0 --port=5555
+    depends_on:
+      redis:
+        condition: service_healthy
 
   qdrant:
     init: true
@@ -76,7 +184,7 @@ services:
     volumes:
       - ./qdrant_data:/qdrant/storage
       - ./qdrant_config.yml:/qdrant/config/production.yml
-  
+
   mis-dense-bge-small:
     init: true
     image: nithish1/mis:dense-bge-small-1.0.0
@@ -92,7 +200,7 @@ services:
       timeout: 60s
       retries: 5
       start_period: 600s
-  
+
   mis-sparse-splade-pp:
     init: true
     image: nithish1/mis:sparse-splade-pp-1.0.0
@@ -108,7 +216,7 @@ services:
       timeout: 60s
       retries: 5
       start_period: 600s
-  
+
   mis-reranker-jina:
     init: true
     image: nithish1/mis:reranker-jina-1.0.0
@@ -128,3 +236,7 @@ services:
 networks:
   rag-net:
     driver: bridge
+
+volumes:
+  shared_uploads:
+  redis_data:
