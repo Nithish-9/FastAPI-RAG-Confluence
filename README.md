@@ -1,203 +1,634 @@
-# Enterprise Hybrid RAG Pipeline
+# RAG Backend — Production Reference
 
-A high-performance, production-ready Retrieval-Augmented Generation (RAG) backend built with **FastAPI** and **Qdrant**. This pipeline implements a sophisticated two-stage retrieval process—combining Dense and Sparse embeddings with Cross-Encoder Reranking—to deliver state-of-the-art search accuracy for local documents and Confluence wikis.
-
----
-
-## 🚀 Key Features
-
-- **Hybrid Search**: Combines semantic understanding (Dense vectors) with keyword precision (Sparse vectors) using Reciprocal Rank Fusion (RRF).
-- **Two-Stage Retrieval**: Initial vector search followed by a precision reranking step using a Cross-Encoder model.
-- **Multi-Source Ingestion**:
-  - **Confluence**: Automated ingestion via webhooks with smart change detection.
-  - **Files**: Support for `PDF`, `DOCX`, `DOC`, `TXT`, and Unstructured data.
-- **Intelligent Chunking**: Markdown-aware splitting that preserves document hierarchy (H1–H3 headers) and ensures semantic continuity with configurable overlaps.
-- **Production Resilience**:
-  - **Self-Healing**: Exponential backoff retries for all AI inference and database calls.
-  - **Deduplication**: Content hashing (SHA-256) to skip re-indexing of unchanged files.
-  - **Connectivity Guard**: Strict startup validation ensures the API won't accept queries if models are offline.
+A production-grade Retrieval-Augmented Generation backend built with FastAPI and Qdrant.  
+Supports two independent knowledge pipelines: **Enterprise** (Confluence + documents) and **Workspace** (local codebases via the `nexus` CLI).
 
 ---
 
-## 🏗️ System Architecture
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Collections](#collections)
+- [Project Structure](#project-structure)
+- [Environment Variables](#environment-variables)
+- [API Reference](#api-reference)
+  - [System](#system)
+  - [Enterprise Pipeline](#enterprise-pipeline)
+  - [Workspace Pipeline](#workspace-pipeline)
+- [Workspace Auth Model](#workspace-auth-model)
+- [Code Parser — Language Support](#code-parser--language-support)
+- [Chunking Strategy](#chunking-strategy)
+- [Ingestion Pipelines](#ingestion-pipelines)
+- [Retrieval Pipeline](#retrieval-pipeline)
+- [System Readiness Gate](#system-readiness-gate)
+- [Dependencies](#dependencies)
+- [Running Locally](#running-locally)
+- [Docker](#docker)
+- [Production Checklist](#production-checklist)
+
+---
+
+## Architecture Overview
 
 ```
-Ingestion Layer → Processing Layer → Embedding Layer → Storage Layer → Retrieval Layer
-(Files/Confluence)  (Hash + Chunk)    (BGE + SPLADE)   (Qdrant/HNSW)  (Hybrid Search + Rerank)
+                        ┌─────────────────────────────────────────┐
+                        │            FastAPI Server                │
+                        │                                          │
+  Confluence Webhook ──▶│  POST /webhook/confluence                │
+  Document Upload    ──▶│  POST /documentupload                    │
+                        │         │                                │
+                        │   document_processor                     │
+                        │         │ LangChain Loaders              │
+                        │         ▼                                │
+                        │   document_chunker                       │
+                        │   (Markdown + Recursive split)           │
+                        │         │                                │
+  nexus CLI          ──▶│  POST /workspace/create-index            │
+  (Go client)           │         │ tree-sitter parser             │
+                        │         ▼                                │
+                        │   EmbeddingService                       │
+                        │   ┌─────────────┬──────────────┐        │
+                        │   │ Dense Model │ Sparse Model │        │
+                        │   │ (Async HTTP)│ (SPLADE)     │        │
+                        │   └──────┬──────┴──────┬───────┘        │
+                        │          └──────┬───────┘                │
+                        │                 ▼                        │
+                        │           Qdrant (2 collections)         │
+                        │   ┌────────────────────────────┐        │
+                        │   │ Enterprise_Knowledge_Base  │        │
+                        │   │ Workspace_Knowledge_Base   │        │
+                        │   └────────────────────────────┘        │
+                        │                 │                        │
+  LLM Tool Call      ──▶│  POST /workspace/retrieve               │
+  RAG Query          ──▶│  POST /rag/retrieve                      │
+                        │         │ Hybrid RRF + Reranker          │
+                        │         ▼                                │
+                        │      Results                             │
+                        └─────────────────────────────────────────┘
 ```
-
-1. **Ingestion Layer** — Loaders extract text from files or Confluence.
-2. **Processing Layer** — Documents are hashed for deduplication and split into semantic chunks.
-3. **Embedding Layer** — Parallel generation of BGE (Dense) and SPLADE (Sparse) vectors.
-4. **Storage Layer** — Chunks and metadata are indexed in Qdrant with HNSW optimization.
-5. **Retrieval Layer** — Hybrid search filters results, scored by a Jina Reranker before being returned.
 
 ---
 
-## 📂 Project Structure
+## Collections
+
+### `Enterprise_Knowledge_Base_<dim>`
+
+For organizational knowledge: Confluence pages and uploaded documents (PDF, DOCX, TXT, MD).
+
+| Field | Description |
+|---|---|
+| `page_id` | Confluence page ID or SHA-256 of file content |
+| `source_type` | `CONFLUENCE`, `PDF`, `DOCX`, `TXT`, etc. |
+| `content_hash` | SHA-256 of raw content — used for change detection |
+| `chunk_index` | Position of chunk within the document |
+| `space_key` | Confluence space key (N/A for files) |
+| `content` | Chunk text (stored for retrieval) |
+
+**Payload index:** `page_id`
+
+---
+
+### `Workspace_Knowledge_Base_<dim>`
+
+For per-user codebase indexing. Supports 3-level isolation.
+
+| Field | Description |
+|---|---|
+| `user_id` | Base64-encoded email — L1 isolation |
+| `email_id` | Plain email — human-readable reference |
+| `workspace_id` | SHA-256 of workspace root path — L2 isolation |
+| `path_id` | SHA-256 of absolute file path — L3 isolation |
+| `path` | Absolute file path on client machine |
+| `file_name` | e.g. `LoanService.java` |
+| `file_extension` | e.g. `.java` |
+| `content_id` | SHA-256 of file content — used for dedup |
+| `chunk_index` | Position of chunk within the file |
+| `symbol` | Extracted function / class / trigger name |
+| `language` | Detected language (from tree-sitter) |
+| `content` | Context header + code (shown to LLM) |
+| `raw_content` | Code only, no header (debug/audit) |
+
+**Payload indexes:** `user_id`, `workspace_id`, `path_id`
+
+Both collections use **named vectors** (`dense-vector`, `sparse-vector`) with HNSW configuration and on-disk storage.
+
+---
+
+## Project Structure
 
 ```
 .
-├── app/
-│   ├── core/               # Config validation & Global System State
-│   ├── schemas/            # Pydantic DTOs (Dense, Sparse, Rerank, RAG)
-│   ├── services/           # Ingestion, Chunking, Embeddings, Qdrant & Rerank logic
-│   └── main.py             # FastAPI entry point & lifespan management
-├── docker-compose.yml      # 5-Service orchestration (API + DB + 3 Models)
-├── Dockerfile              # Python 3.13-slim build specification
-├── qdrant_config.yml       # Vector DB production configuration
-└── requirements.txt        # Python dependencies
+├── main.py                          # FastAPI app, lifespan, enterprise endpoints
+├── core/
+│   ├── config_validator.py          # Fail-fast env validation on startup
+│   ├── concurrency.py               # ThreadPoolExecutor for sync tasks
+│   └── state.py                     # SystemState readiness gate
+├── schemas/
+│   ├── dense_dto.py                 # Dense embedding request/response models
+│   ├── sparse_dto.py                # Sparse embedding request/response models
+│   ├── reranker_dto.py              # Reranker request/response models
+│   ├── rag_dto.py                   # Enterprise RAG query models
+│   └── workspace_dto.py             # Workspace create/delete/retrieve models
+├── service/
+│   ├── model_services.py            # Hosted/Local factory for Dense, Sparse, Reranker
+│   ├── generate_embedding.py        # EmbeddingService — parallel dense+sparse
+│   ├── rerank_service.py            # RerankService with connectivity check
+│   ├── document_chunking.py         # Markdown + recursive chunker (enterprise)
+│   ├── document_processor.py        # LangChain loaders for Confluence + files
+│   ├── document_ingestion.py        # Enterprise ingestion pipeline
+│   ├── qdrant_service.py            # Enterprise Qdrant collection + hybrid search
+│   ├── code_parser.py               # Tree-sitter code chunker (workspace)
+│   ├── workspace_ingestion.py       # Workspace ingestion pipeline
+│   └── workspace_qdrant_service.py  # Workspace Qdrant collection + hybrid search
+└── routers/
+    └── workspace_router.py          # /workspace/* endpoints
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## Environment Variables
 
-| Layer | Technology |
+### Required
+
+| Variable | Description | Example |
+|---|---|---|
+| `QDRANT_HOST` | Qdrant server hostname | `localhost` |
+| `DENSE_MODEL_DIM` | Dense vector dimension — must match model output | `768` |
+| `DENSE_URL` | Dense embedding service URL | `http://localhost:8001` |
+| `SPARSE_URL` | Sparse embedding service URL | `http://localhost:8002` |
+| `RERANKER_URL` | Reranker service URL | `http://localhost:8003` |
+
+### Model Mode (per service: DENSE / SPARSE / RERANKER)
+
+| Variable | Description | Default |
+|---|---|---|
+| `{PREFIX}_HOSTED` | `true` = hosted API, `false` = local service | `false` |
+| `{PREFIX}_API_KEY` | API key (required when `_HOSTED=true`) | — |
+| `{PREFIX}_MODEL` | Model name (required when `_HOSTED=true`) | — |
+
+### Qdrant Tuning
+
+| Variable | Description | Default |
+|---|---|---|
+| `QDRANT_PORT` | Qdrant port | `6333` |
+| `QDRANT_COLLECTION_BASE` | Enterprise collection name prefix | `Enterprise_Knowledge_Base` |
+| `WORKSPACE_COLLECTION_BASE` | Workspace collection name prefix | `Workspace_Knowledge_Base` |
+| `DENSE_DISTANCE` | Distance metric (`COSINE`, `DOT`, `EUCLID`) | `COSINE` |
+| `QDRANT_ON_DISK` | Store vectors on disk (saves RAM) | `true` |
+| `HNSW_M` | HNSW M parameter | `16` |
+| `HNSW_EF_CONSTRUCT` | HNSW ef_construct | `100` |
+| `HNSW_EF` | HNSW ef at query time | `128` |
+| `SPARSE_FULL_SCAN_THRESHOLD` | Sparse index full-scan threshold | `1000` |
+| `QDRANT_INDEXING_THREADS` | Indexing thread count (`0` = auto) | `0` |
+
+### Confluence (optional)
+
+| Variable | Description |
 |---|---|
-| Framework | FastAPI (Python 3.13) |
-| Vector Database | Qdrant v1.17.0 |
-| Dense Embeddings | BGE-Small |
-| Sparse Embeddings | SPLADE |
-| Reranker | Jina Cross-Encoder |
-| Inference Client | HTTPX + Tenacity (Async) |
-| Processing | LangChain & Unstructured |
-| Deployment | Docker Compose |
+| `CONFLUENCE_BASE_URL` | e.g. `https://yourorg.atlassian.net/wiki` |
+| `EMAIL` | Atlassian account email |
+| `API_TOKEN` | Atlassian API token |
+
+### App
+
+| Variable | Description | Default |
+|---|---|---|
+| `APP_PORT` | Port to bind | `9000` |
+| `RETRIES` | Connectivity check retries | `5` |
+| `DELAY` | Seconds between retries | `3` |
 
 ---
 
-## ⚙️ Environment Configuration
+## API Reference
 
-### Vector Database (Qdrant)
+### System
 
-| Variable | Default | Description |
-|---|---|---|
-| `QDRANT_HOST` | `qdrant` | Hostname of the DB container |
-| `QDRANT_PORT` | `6333` | Qdrant port |
-| `DENSE_MODEL_DIM` | `384` | Must match embedding model output |
-| `QDRANT_ON_DISK` | `true` | Enables on-disk storage |
-| `DENSE_DISTANCE` | `COSINE` | Distance metric for vector comparison |
-| `HNSW_M` | `16` | HNSW graph parameter |
-| `HNSW_EF` | `128` | Search efficiency parameter |
+#### `GET /health`
 
-### Inference Services
-
-| Variable | Default | Description |
-|---|---|---|
-| `DENSE_HOSTED` | `false` | Set to `true` to use external APIs |
-| `DENSE_URL` | `http://mis-dense-bge-small:8000` | Dense embedding service URL |
-| `SPARSE_HOSTED` | `false` | |
-| `SPARSE_URL` | `http://mis-sparse-splade-pp:8000` | Sparse embedding service URL |
-| `RERANKER_HOSTED` | `false` | |
-| `RERANKER_URL` | `http://mis-reranker-jina:8000` | Reranker service URL |
-| `EMBED_BATCH_SIZE` | `32` | Batch size for embedding calls |
-| `MAX_RERANK_CANDIDATES` | `100` | Max candidates passed to reranker |
-
-### HTTP & Connection Settings
-
-| Variable | Default | Description |
-|---|---|---|
-| `HTTP_TOTAL_TIMEOUT` | `120.0` | Total request timeout (seconds) |
-| `HTTP_MAX_CONNECTIONS` | `100` | Max concurrent HTTP connections |
-| `INFERENCE_MAX_RETRIES` | `3` | Max retries on inference failure |
-
----
-
-## 🚢 Deployment
-
-### Prerequisites
-
-- Docker and Docker Compose installed.
-- Sufficient RAM to host local inference models (Dense, Sparse, Rerank).
-
-### Quick Start
-
-```bash
-# Build the application
-docker build -t rag-fastapi:1.2.0 .
-
-# Start the full stack
-docker-compose up -d
-
-# Check system logs
-docker logs -f rag-fastapi
-```
-
-The system will initialize **5 containers**:
-
-| # | Container | Role | Port |
-|---|---|---|---|
-| 1 | `rag-fastapi` | Core API gateway | `9001` |
-| 2 | `qdrant` | Vector database | `6333` |
-| 3 | `mis-dense-bge-small` | Dense embedding engine | — |
-| 4 | `mis-sparse-splade-pp` | Sparse/Lexical embedding engine | — |
-| 5 | `mis-reranker-jina` | Cross-encoder reranking engine | — |
-
-> **Note:** Docker-native healthchecks ensure the API only receives traffic after all models have finished loading their weights (`start-period: 600s`).
-
----
-
-## 🔌 API Reference
-
-### 1. System Health
-
-```
-GET /health
-```
-
-Returns `200 OK` if all 4 core components (Dense, Sparse, Rerank, VectorDB) are ready.
-
-### 2. File Ingestion
-
-```
-POST /documentupload
-Content-Type: multipart/form-data
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `file` | `File` | The document to ingest (`PDF`, `DOCX`, `DOC`, `TXT`) |
-
-**Process:** Saves to temp → hashes content → checks for changes → chunks → embeds → indexes.
-
-### 3. Confluence Sync
-
-```
-POST /webhook/confluence
-```
-
-Background task that fetches the latest page content, compares hashes, and updates the index only if changes are detected.
-
-### 4. Hybrid Search (RAG)
-
-```
-POST /rag/retrieve
-Content-Type: application/json
-```
+Returns readiness state of all components.
 
 ```json
 {
-  "query": "How do I set up my developer environment?",
-  "top_k": 5,
-  "page_id": "optional_id_to_scope_search",
-  "chunk_index": 0
+  "dense": true,
+  "sparse": true,
+  "reranker": true,
+  "vectordb": true
 }
 ```
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `query` | `string` | ✅ | The search question |
-| `top_k` | `integer` | ✅ | Number of results to return |
-| `page_id` | `string` | ❌ | Scope to a specific Confluence page |
-| `chunk_index` | `integer` | ❌ | Starting chunk offset |
+Returns `503` from any endpoint until all four components are `true`.
 
 ---
 
-## 🔧 Reliability & Tuning
+### Enterprise Pipeline
 
-| Mechanism | Detail |
+#### `POST /webhook/confluence`
+
+Webhook receiver for Confluence page events. Ingestion is queued to a background worker.
+
+```json
+{
+  "page": { "id": "123456" }
+}
+```
+
+#### `POST /documentupload`
+
+Upload a document for ingestion. Supported: `.pdf`, `.docx`, `.doc`, `.txt`, and any other format via `UnstructuredFileLoader`.
+
+- **Content-Type:** `multipart/form-data`
+- **Field:** `file`
+
+Ingestion is queued to a background worker. Returns immediately.
+
+#### `POST /rag/retrieve`
+
+Hybrid semantic search over the enterprise knowledge base.
+
+**Request:**
+```json
+{
+  "query": "how does the loan approval process work?",
+  "top_k": 5,
+  "page_id": "optional-filter",
+  "chunk_index": null
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "count": 5,
+  "data": [
+    {
+      "content": "...",
+      "metadata": { "page_id": "...", "source_type": "CONFLUENCE", "chunk_index": 2, "...": "..." },
+      "rrf_score": 0.032,
+      "rerank_score": 0.91
+    }
+  ]
+}
+```
+
+---
+
+### Workspace Pipeline
+
+All workspace endpoints require the header:
+
+```
+X-User-Email: <base64-encoded email>
+```
+
+#### `POST /workspace/create-index`
+
+Ingest a single file from a user's local workspace. Called by the `nexus` Go CLI.
+
+- **Content-Type:** `multipart/form-data`
+- **Max file size:** 50 MB
+
+| Field | Type | Description |
+|---|---|---|
+| `content_id` | string | SHA-256 of file content |
+| `workspace_id` | string | SHA-256 of workspace root path |
+| `path` | string | Absolute file path on client |
+| `path_id` | string | SHA-256 of file path |
+| `file_name` | string | e.g. `LoanService.java` |
+| `file_extension` | string | e.g. `.java` |
+| `file_data` | file | File bytes |
+
+**Dedup:** If a point with the same `path_id` + `content_id` already exists, ingestion is skipped and `"status": "skipped"` is returned. No API call to the embedding service is made.
+
+**Response (indexed):**
+```json
+{ "status": "success", "chunks_upserted": 12, "file_name": "LoanService.java" }
+```
+
+**Response (skipped):**
+```json
+{ "status": "skipped", "reason": "content_id unchanged" }
+```
+
+---
+
+#### `POST /workspace/delete-index`
+
+Bulk-delete all indexed chunks for a list of `path_id`s. Called by the `nexus` delete worker using pre-computed `ChildFilePathIDs` from the directory tree — no tree traversal required at delete time.
+
+**Request:**
+```json
+{
+  "path_ids": ["sha256-of-path-1", "sha256-of-path-2"]
+}
+```
+
+**Response:**
+```json
+{ "status": "success", "deleted_path_ids": 2 }
+```
+
+---
+
+#### `POST /workspace/retrieve`
+
+Hybrid semantic search over a user's indexed workspace. Designed to be called as an **LLM tool**.
+
+**Request:**
+```json
+{
+  "query": "how is interest calculated for fixed rate loans?",
+  "top_k": 5,
+  "workspace_id": "sha256-of-workspace-root",
+  "path_id": null,
+  "chunk_index": null
+}
+```
+
+`workspace_id` and the `X-User-Email` header are **mandatory**. `path_id` and `chunk_index` are optional — the LLM passes these on follow-up calls to drill into a specific file or chunk.
+
+**LLM tool call pattern:**
+```
+Turn 1: query + workspace_id                       → returns chunks with path_id, chunk_index
+Turn 2: query + workspace_id + path_id             → narrows to one file
+Turn 3: query + workspace_id + path_id + chunk_index → fetches a specific chunk's context
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "count": 3,
+  "data": [
+    {
+      "content": "# File: src/loans/LoanService.java\n# Workspace: /users/nithish/bank-repo\n# Language: java\n# Symbol: LoanService.calculateInterest\n---\npublic double calculateInterest(...) { ... }",
+      "file_name": "LoanService.java",
+      "file_extension": ".java",
+      "path": "/users/nithish/bank-repo/src/loans/LoanService.java",
+      "path_id": "sha256-of-path",
+      "workspace_id": "sha256-of-workspace",
+      "chunk_index": 3,
+      "content_id": "sha256-of-content",
+      "symbol": "calculateInterest",
+      "language": "java",
+      "rrf_score": 0.031,
+      "rerank_score": 0.94
+    }
+  ]
+}
+```
+
+---
+
+## Workspace Auth Model
+
+```
+X-User-Email: <base64("user@example.com")>
+             = "dXNlckBleGFtcGxlLmNvbQ=="
+```
+
+The server decodes this to derive:
+
+| Stored Field | Value |
 |---|---|
-| **Retry Logic** | `tenacity` with exponential backoff (min 2s, max 10s) |
-| **Connection Pooling** | `httpx.Limits` — 100 max connections, 20 keep-alive |
-| **Candidate Truncation** | Reranker processes top `MAX_RERANK_CANDIDATES` (default: 100) only |
-| **Healthchecks** | Docker-native checks delay traffic until model weights are fully loaded |
+| `user_id` | `dXNlckBleGFtcGxlLmNvbQ==` (base64 — used for Qdrant filtering) |
+| `email_id` | `user@example.com` (plain — stored for human-readable reference) |
+
+Every Qdrant query carries a mandatory `user_id` filter, so users can never read each other's indexed data even within the same collection.
+
+---
+
+## Code Parser — Language Support
+
+`service/code_parser.py` uses **tree-sitter** (the same parsing engine used by Cursor and Claude Code) for accurate, error-tolerant AST-based chunking.
+
+| Strategy | Languages |
+|---|---|
+| **tree-sitter (native grammar)** | Python, Go, Java, JavaScript, TypeScript, JSX, TSX, C, C++, C#, Rust, Ruby, Kotlin, PHP, Scala, Bash, HTML, CSS, SCSS, SQL, TOML, YAML, JSON |
+| **Regex boundary detection** | Apex (`.cls`, `.trigger`, `.apex`, `.page`, `.component`), Swift |
+| **Recursive text splitter** | Markdown, plain text, XML |
+| **Existing document pipeline** | PDF, DOCX, DOC |
+
+Tree-sitter has built-in **error recovery** — even syntactically broken or partially valid code files are parsed without failure. If tree-sitter produces no nodes, the file silently falls back to `RecursiveCharacterTextSplitter`.
+
+### Salesforce / Apex Extensions
+
+| Extension | Handled as |
+|---|---|
+| `.cls` | Apex (regex: class + method boundaries) |
+| `.trigger` | Apex (regex: trigger declaration boundary) |
+| `.apex` | Apex |
+| `.page` | Apex (Visualforce) |
+| `.component` | Apex (Visualforce component) |
+
+---
+
+## Chunking Strategy
+
+Every chunk produced by the workspace pipeline includes:
+
+**Context header** (prepended to every chunk):
+```
+# File: src/loans/LoanService.java
+# Workspace: /users/nithish/bank-repo
+# Language: java
+# Symbol: LoanService.calculateInterest
+---
+<code>
+```
+
+This ensures the LLM always knows which file and symbol a chunk belongs to without needing a separate metadata lookup.
+
+**Overlap:** 50-character tail of the previous chunk is prepended to the next chunk within the same file, preventing logic from being cut at function boundaries. Overlap never crosses file boundaries.
+
+**Enterprise pipeline** uses 1000-character chunks with 100-character overlap via LangChain's `MarkdownHeaderTextSplitter` + `RecursiveCharacterTextSplitter`.
+
+---
+
+## Ingestion Pipelines
+
+### Enterprise
+
+```
+Confluence Webhook / File Upload
+        │
+        ▼
+document_processor.py       (LangChain loaders)
+        │  combined content + metadata
+        ▼
+Change detection             (content_hash comparison via Qdrant scroll)
+        │  changed or new
+        ▼
+document_chunking.py         (MarkdownHeader + Recursive split)
+        │  List[Document] with metadata
+        ▼
+EmbeddingService             (dense + sparse in parallel via asyncio.gather)
+        │
+        ▼
+qdrant_service.upsert_chunks (delete old → upsert new)
+```
+
+### Workspace
+
+```
+nexus CLI  →  POST /workspace/create-index  (multipart)
+        │
+        ▼
+workspace_ingestion.py
+        │  decode base64 header → user_id, email_id
+        │  dedup check: (path_id + content_id) in Qdrant?  → skip if yes
+        │  delete old chunks for path_id
+        ▼
+code_parser.py               (tree-sitter / regex / fallback)
+        │  List[CodeChunk] with symbol, language, context header
+        ▼
+EmbeddingService             (dense + sparse in parallel)
+        │
+        ▼
+workspace_qdrant_service.upsert_chunks
+```
+
+---
+
+## Retrieval Pipeline
+
+Both enterprise and workspace retrieval use the same hybrid pipeline:
+
+```
+Query
+  │
+  ▼
+EmbeddingService.get_combined_embeddings   (dense + sparse in parallel)
+  │
+  ▼
+Qdrant query_points
+  ├── Prefetch: dense-vector  (HNSW, top_k × 4 candidates)
+  └── Prefetch: sparse-vector (full_scan or index, top_k × 4 candidates)
+  │
+  ▼
+RRF Fusion                   (Reciprocal Rank Fusion)
+  │  top_k × 4 fused candidates
+  ▼
+RerankService.rerank         (cross-encoder, top_k final results)
+  │
+  ▼
+Response
+```
+
+Fallback: if the reranker is unavailable, the endpoint falls back to returning the top-k RRF results directly (logged as a warning, not a 500).
+
+---
+
+## System Readiness Gate
+
+On startup, all four components initialize in parallel:
+
+```
+asyncio.gather(
+    qdrant_service.init_qdrant(),
+    workspace_qdrant_service.init_collection(),
+    embed_service.check_dense_connectivity(),
+    embed_service.check_sparse_connectivity(),
+    rerank_service.check_reranker_connectivity(),
+)
+```
+
+Each connectivity check retries up to `RETRIES` times with `DELAY` seconds between attempts. Until all components report ready, every endpoint returns `503 Service Unavailable`. Check `/health` to monitor startup progress.
+
+---
+
+## Dependencies
+
+```txt
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
+httpx
+qdrant-client
+langchain-community
+langchain-core
+langchain-text-splitters
+pypdf
+docx2txt
+unstructured
+tree-sitter==0.21.3
+tree-sitter-languages==1.10.2
+```
+
+> **Note:** `tree-sitter` version must be pinned to `0.21.3`. `tree-sitter-languages==1.10.2` was compiled against this version. Using `tree-sitter>=0.22` will cause import failures.
+
+---
+
+## Running Locally
+
+```bash
+# 1. Clone and install
+pip install -r requirements.txt
+
+# 2. Start Qdrant
+docker run -p 6333:6333 qdrant/qdrant
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your model URLs and Qdrant host
+
+# 4. Start the server
+python main.py
+# or
+uvicorn main:app --host 0.0.0.0 --port 9000
+```
+
+---
+
+## Docker
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 9000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "9000"]
+```
+
+```yaml
+# docker-compose.yml
+services:
+  rag-api:
+    build: .
+    ports:
+      - "9000:9000"
+    env_file: .env
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
+```
+
+---
+
+## Production Checklist
+
+- [ ] Pin `tree-sitter==0.21.3` in `requirements.txt`
+- [ ] Set `QDRANT_ON_DISK=true` for collections larger than available RAM
+- [ ] Tune `HNSW_EF` (query accuracy vs. latency) — start at `128`, raise for higher recall
+- [ ] Set `QDRANT_INDEXING_THREADS` to a value less than your CPU core count to avoid I/O saturation during bulk ingestion
+- [ ] Rotate the base64 encoding of workspace emails to a stronger scheme (HMAC or JWT) before exposing to the internet
+- [ ] Add rate limiting on `/workspace/create-index` — each call reads a file and calls the embedding service
+- [ ] Mount `temp_uploads/` to a fast ephemeral disk (tmpfs) — files are deleted immediately after ingestion
+- [ ] Set `RETRIES=10` and `DELAY=5` in production where cold-start of model servers is slow
+- [ ] Monitor `/health` in your load balancer health check — it reflects all component states
+- [ ] For large repos, pre-warm the workspace collection with a full sync before enabling the LLM tool
