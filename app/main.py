@@ -21,11 +21,11 @@ from fastapi.responses import JSONResponse
 from service import document_processor
 from schemas.rag_dto import RAGQueryRequest
 from service.generate_embedding import embed_service
-from app.service.enterprise_qdrant_service import enterprise_qdrant_service
+from service.enterprise_qdrant_service import enterprise_qdrant_service
 from service.workspace_qdrant_service import workspace_qdrant_service
 from core.state import system_state
 from service.rerank_service import rerank_service
-from app.router.workspace_router import router as workspace_router
+from router.workspace_router import router as workspace_router
 from service.model_services import close_http_client
 
 PORT = int(os.getenv("APP_PORT", 9000))
@@ -66,7 +66,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(workspace_router)
 
 

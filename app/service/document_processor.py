@@ -10,7 +10,7 @@ from langchain_community.document_loaders import (
     UnstructuredFileLoader
 )
 from service.document_ingestion import ingestion_service 
-from app.service.enterprise_qdrant_service import qdrant_service
+from service.enterprise_qdrant_service import enterprise_qdrant_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,7 +82,7 @@ async def process_confluence_page(page_id: str):
         })
 
         is_changed = await asyncio.to_thread(
-            qdrant_service.check_confluence_changed, page_id, new_content_hash
+            enterprise_qdrant_service.check_confluence_changed, page_id, new_content_hash
         )
 
         if not is_changed:
@@ -113,7 +113,7 @@ async def process_documents(loader, file_name, file_extension):
             "content_hash": page_id 
         })
 
-        exists = await asyncio.to_thread(qdrant_service.check_doc_changed, page_id)
+        exists = await asyncio.to_thread(enterprise_qdrant_service.check_doc_changed, page_id)
         
         if not exists:
             logger.info(f"--- [Ingestor] {file_name} content already exists. Skipping. ---")

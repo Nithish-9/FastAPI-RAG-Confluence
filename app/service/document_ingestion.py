@@ -3,7 +3,7 @@ import logging
 from langchain_core.documents import Document 
 from service.document_chunking import documentChunker
 from service.generate_embedding import embed_service
-from app.service.enterprise_qdrant_service import qdrant_service
+from service.enterprise_qdrant_service import enterprise_qdrant_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,11 +41,11 @@ class DocumentIngestionService:
 
             try:
                 logger.info(f"--- [Ingestor] Removing stale data for {page_id} ---")
-                await asyncio.to_thread(qdrant_service.delete_chunks, page_id)
+                await asyncio.to_thread(enterprise_qdrant_service.delete_chunks, page_id)
                 
                 logger.info(f"--- [Ingestor] Upserting {len(chunks)} new chunks to Qdrant ---")
                 await asyncio.to_thread(
-                    qdrant_service.upsert_chunks, 
+                    enterprise_qdrant_service.upsert_chunks, 
                     chunks, 
                     dense_vecs, 
                     sparse_vecs
