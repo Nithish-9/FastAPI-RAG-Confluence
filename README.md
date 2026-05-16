@@ -622,13 +622,9 @@ volumes:
 
 ## Production Checklist
 
-- [ ] Pin `tree-sitter==0.21.3` in `requirements.txt`
 - [ ] Set `QDRANT_ON_DISK=true` for collections larger than available RAM
 - [ ] Tune `HNSW_EF` (query accuracy vs. latency) — start at `128`, raise for higher recall
 - [ ] Set `QDRANT_INDEXING_THREADS` to a value less than your CPU core count to avoid I/O saturation during bulk ingestion
-- [ ] Rotate the base64 encoding of workspace emails to a stronger scheme (HMAC or JWT) before exposing to the internet
-- [ ] Add rate limiting on `/workspace/create-index` — each call reads a file and calls the embedding service
-- [ ] Mount `temp_uploads/` to a fast ephemeral disk (tmpfs) — files are deleted immediately after ingestion
 - [ ] Set `RETRIES=10` and `DELAY=5` in production where cold-start of model servers is slow
 - [ ] Monitor `/health` in your load balancer health check — it reflects all component states
 - [ ] For large repos, pre-warm the workspace collection with a full sync before enabling the LLM tool
