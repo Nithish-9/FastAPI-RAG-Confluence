@@ -21,6 +21,10 @@ from celery.result import AsyncResult
 from workers.ingest_worker import celery_app
 from service.workspace_ingestion import decode_user_identity
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])

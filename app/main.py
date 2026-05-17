@@ -71,8 +71,8 @@ app.include_router(workspace_router)
 
 async def initialize_all_components():
     results = await asyncio.gather(
-        asyncio.to_thread(enterprise_qdrant_service.init_collection),
-        asyncio.to_thread(workspace_qdrant_service.init_collection),
+        enterprise_qdrant_service.init_collection(),
+        workspace_qdrant_service.init_collection(),
         embed_service.check_dense_connectivity(),
         embed_service.check_sparse_connectivity(),
         rerank_service.check_reranker_connectivity(),

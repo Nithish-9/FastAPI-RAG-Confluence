@@ -8,6 +8,10 @@ from typing import List, Optional, Sequence, Tuple
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tree_sitter import Language, Parser
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 def _load_language(name: str) -> Optional[Language]:

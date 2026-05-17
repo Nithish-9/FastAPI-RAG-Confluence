@@ -20,14 +20,15 @@ from schemas.reranker_dto import RerankRequest, RerankResponse
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
 
-# Inference services (embedding + reranker) can be slow on first call
-# (model warm-up, large batches). Keep timeouts generous.
-TOTAL_TIMEOUT    = float(os.getenv("HTTP_TOTAL_TIMEOUT", 300.0))   # 5 min — covers cold start
-CONNECT_TIMEOUT  = float(os.getenv("HTTP_CONNECT_TIMEOUT", 15.0))  # 15s connect
+TOTAL_TIMEOUT    = float(os.getenv("HTTP_TOTAL_TIMEOUT", 300.0))   
+CONNECT_TIMEOUT  = float(os.getenv("HTTP_CONNECT_TIMEOUT", 15.0))  
 
 MAX_CONNECTIONS  = int(os.getenv("HTTP_MAX_CONNECTIONS", 100))
 MAX_KEEPALIVE    = int(os.getenv("HTTP_MAX_KEEPALIVE", 20))
@@ -86,14 +87,14 @@ def get_http_client() -> httpx.AsyncClient:
         _shared_client = httpx.AsyncClient(**_CLIENT_OPTIONS)
         _client_loop = current_loop
 
-    assert _shared_client is not None  # ← tells Pylance the value is guaranteed here
+    assert _shared_client is not None
     return _shared_client
 
 
 async def close_http_client() -> None:
     """
     Gracefully close the shared HTTP client.
-    Call this from FastAPI lifespan shutdown so connections are cleanly drained.
+    Called from FastAPI lifespan shutdown so connections are cleanly drained.
     """
     global _shared_client, _client_loop
     if _shared_client is not None and not _shared_client.is_closed:
@@ -102,8 +103,6 @@ async def close_http_client() -> None:
     _shared_client = None
     _client_loop   = None
 
-
-# ── Retry decorator ───────────────────────────────────────────────────────────
 
 def inference_retry():
     return retry(
@@ -118,8 +117,6 @@ def inference_retry():
     )
 
 
-# ── Base model ────────────────────────────────────────────────────────────────
-
 class BaseModel(ABC):
     """
     Base for all inference clients.
@@ -128,9 +125,6 @@ class BaseModel(ABC):
     api_key: Optional[str] = None
 
     def __init__(self):
-        # Don't store the client at init time — always fetch it at call time
-        # so that Celery workers (which have a fresh event loop per task)
-        # always get a client bound to the correct loop.
         pass
 
     @property
@@ -157,8 +151,6 @@ class BaseModel(ABC):
         )
 
         if response.status_code != 200:
-            # Log as warning — tenacity will retry; only the final failure
-            # after all retries should be treated as an error (reraise=True handles it).
             logger.warning(
                 f"[HTTP] Non-200 from {url}: "
                 f"{response.status_code} — {response.text[:200]}"
@@ -168,7 +160,6 @@ class BaseModel(ABC):
         return response_model(**response.json())
 
 
-# ── Dense embedding ───────────────────────────────────────────────────────────
 
 class DenseModelInterface(ABC):
     @abstractmethod
@@ -212,7 +203,6 @@ class DenseModelFactory:
         return LocalDenseModel()
 
 
-# ── Sparse embedding ──────────────────────────────────────────────────────────
 
 class SparseModelInterface(ABC):
     @abstractmethod
@@ -255,7 +245,6 @@ class SparseModelFactory:
         return LocalSparseModel()
 
 
-# ── Reranker ──────────────────────────────────────────────────────────────────
 
 class RerankerInterface(ABC):
     @abstractmethod
