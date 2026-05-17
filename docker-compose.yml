@@ -1,7 +1,7 @@
 services:
   rag-fastapi:
     init: true
-    image: nithish1/rag:fastapi-1.2.0
+    image: nithish1/rag:fastapi-amd64-2.0.0
     container_name: rag-fastapi
     restart: unless-stopped
     networks:
@@ -70,7 +70,7 @@ services:
 
   rag-worker:
     init: true
-    image: nithish1/rag:fastapi-1.2.0  
+    image: nithish1/rag:fastapi-amd64-2.0.0
     container_name: rag-worker
     restart: unless-stopped
     networks:

@@ -7,6 +7,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from tree_sitter import Language, Parser
+import tree_sitter_language_pack as tslp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,7 +23,6 @@ def _load_language(name: str) -> Optional[Language]:
     Cached after first load.
     """
     try:
-        import tree_sitter_language_pack as tslp
         pack_name = _PACK_NAME_MAP.get(name, name)
         return tslp.get_language(pack_name)
     except Exception as e:
