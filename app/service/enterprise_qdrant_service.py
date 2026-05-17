@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 
+from typing import List
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
@@ -14,14 +15,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
+ENTERPRISE_COLLECTION_DENSE_DIM = int(os.getenv("ENTERPRISE_COLLECTION_DENSE_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
 QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
 
 ENTERPRISE_COLLECTION = os.getenv("ENTERPRISE_COLLECTION", "Enterprise_Knowledge_Base")
-FINAL_COLLECTION_NAME = f"{ENTERPRISE_COLLECTION}_{DENSE_MODEL_DIM}"
+FINAL_COLLECTION_NAME = f"{ENTERPRISE_COLLECTION}_{ENTERPRISE_COLLECTION_DENSE_DIM}"
 
 QDRANT_INDEXING_THREADS = int(os.getenv("QDRANT_INDEXING_THREADS", 0))
 DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
@@ -79,7 +81,7 @@ class EnterpriseQdrantService:
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=DENSE_MODEL_DIM,
+                    size=ENTERPRISE_COLLECTION_DENSE_DIM,
                     distance=DISTANCE_METRIC,
                     on_disk=QDRANT_ON_DISK,
                     hnsw_config=models.HnswConfigDiff(
@@ -173,71 +175,101 @@ class EnterpriseQdrantService:
             )
         )
 
-    async def hybrid_search(self, query_text, query_dense, query_sparse, limit=5, page_id=None, chunk_index=None):
-        filter_conditions = []
+    async def hybrid_search(
+        self,
+        query_text: str,
+        query_dense: list,
+        query_sparse,
+        limit: int = 5,
+        page_id: str | None = None,
+        chunk_index: int | None = None,
+    ) -> list[dict]:
+
+        filter_conditions: List[models.Condition] = []   
         if page_id:
-            filter_conditions.append(models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id)))
+            filter_conditions.append(
+                models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))
+            )
         if chunk_index is not None:
-            filter_conditions.append(models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index)))
+            filter_conditions.append(
+                models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index))
+            )
 
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-        candidate_limit = limit * 4 
+        candidate_limit = limit * 10 
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices,
-            values=query_sparse.values
+            values=query_sparse.values,
         )
 
         try:
             async with asyncio.timeout(QDRANT_TIMEOUT):
                 response = await asyncio.to_thread(
-                self.client.query_points,
-                collection_name=self.collection_name,
-                prefetch=[
-                    models.Prefetch(
-                        query=query_dense,
-                        using="dense-vector",
-                        limit=candidate_limit,
-                        filter=search_filter,
-                        params=models.SearchParams(hnsw_ef=HNSW_EF)
-                    ),
-                    models.Prefetch(
-                        query=sparse_query,
-                        using="sparse-vector",
-                        limit=candidate_limit,
-                        filter=search_filter
-                    ),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
-                limit=candidate_limit
-            )
+                    self.client.query_points,
+                    collection_name=self.collection_name,
+                    prefetch=[
+                        models.Prefetch(
+                            query=query_dense,
+                            using="dense-vector",
+                            limit=candidate_limit,
+                            filter=search_filter,
+                            params=models.SearchParams(hnsw_ef=HNSW_EF),
+                        ),
+                        models.Prefetch(
+                            query=sparse_query,
+                            using="sparse-vector",
+                            limit=candidate_limit,
+                            filter=search_filter,
+                        ),
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
+                    limit=candidate_limit,
+                )
         except TimeoutError:
             logger.error(f"--- [EnterpriseQdrant] Search timed out after {QDRANT_TIMEOUT}s ---")
             return []
         except Exception as e:
-            logger.error(f"--- [EnterpriseQdrant] Search failed to execute: {repr(e)} ---")
+            logger.error(f"--- [EnterpriseQdrant] Search failed: {repr(e)} ---")
             return []
 
         candidates = []
         for point in response.points:
             if point.payload:
                 candidates.append({
-                    "content": point.payload.get("content", ""),
-                    "metadata": point.payload,
-                    "rrf_score": point.score
+                    "content":   point.payload.get("content", ""),
+                    "metadata":  point.payload,
+                    "rrf_score": point.score, 
                 })
 
         if not candidates:
             return []
 
         try:
-            return await rerank_service.rerank(
-                query=query_text, 
-                documents=candidates, 
-                top_n=limit
+            reranked = await rerank_service.rerank(
+                query=query_text,
+                documents=candidates,
+                top_n=limit,
             )
+
+            filtered = [
+                r for r in reranked
+                if (r.get("rerank_score") or 0) > RERANK_THRESHOLD
+            ]
+
+            if not filtered:
+                logger.warning(
+                    f"--- [EnterpriseQdrant] All {len(reranked)} results below "
+                    f"rerank threshold {RERANK_THRESHOLD} — returning empty ---"
+                )
+                return []
+
+            return filtered
+
         except Exception as e:
-            logger.error(f"--- [EnterpriseQdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
+            logger.error(
+                f"--- [EnterpriseQdrant] Reranking failed, falling back to RRF: {repr(e)} ---"
+            )
             return candidates[:limit]
     
 enterprise_qdrant_service = EnterpriseQdrantService()

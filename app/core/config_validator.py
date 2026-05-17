@@ -19,10 +19,13 @@ def validate_config():
     if not os.getenv("QDRANT_HOST"):
         errors.append("QDRANT_HOST is missing.")
     
-    if not os.getenv("DENSE_MODEL_DIM"):
-        errors.append("DENSE_MODEL_DIM must be set for collection schema alignment.")
+    if not os.getenv("ENTERPRISE_COLLECTION_DENSE_DIM"):
+        errors.append("ENTERPRISE_COLLECTION_DENSE_DIM must be set for Enterprise collection schema alignment.")
     
-    for prefix in ["DENSE", "SPARSE", "RERANKER"]:
+    if not os.getenv("WORKSPACE_COLLECTION_DENSE_DIM"):
+        errors.append("WORKSPACE_COLLECTION_DENSE_DIM must be set for Workspace collection schema alignment.")
+    
+    for prefix in ["TEXT_DENSE","CODE_DENSE","TEXT_SPARSE", "RERANKER"]:
         is_hosted = get_env_bool(f"{prefix}_HOSTED")
         url = os.getenv(f"{prefix}_URL")
         

@@ -5,7 +5,7 @@ import urllib3
 
 import httpx
 from abc import ABC, abstractmethod
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict, Callable, Any
 
 from tenacity import (
     retry,
@@ -163,94 +163,85 @@ class BaseModel(ABC):
 
 class DenseModelInterface(ABC):
     @abstractmethod
-    async def get_dense_embeddings(
-        self, text: Union[str, List[str]]
-    ) -> DenseEmbedResponse:
+    async def get_dense_embeddings(self, text: Union[str, List[str], Any]) -> DenseEmbedResponse:
         pass
 
-
-class BaseDenseModel(BaseModel, DenseModelInterface):
+# Text Dense Embeddings
+class BaseTextDenseModel(BaseModel, DenseModelInterface):
     def __init__(self):
         super().__init__()
-        self.url      = str(os.getenv("DENSE_URL", ""))
-        self.api_key  = os.getenv("DENSE_API_KEY")
-        self.model    = os.getenv("DENSE_MODEL")
-        self.mode_dim = int(os.getenv("DENSE_MODEL_DIM", 0))
+        self.url      = str(os.getenv("TEXT_DENSE_URL", ""))
+        self.api_key  = os.getenv("TEXT_DENSE_API_KEY")
+        self.model    = os.getenv("TEXT_DENSE_MODEL")
+        self.mode_dim = int(os.getenv("TEXT_DENSE_MODEL_DIM", 0))
 
 
-class HostedDenseModel(BaseDenseModel):
-    async def get_dense_embeddings(
-        self, text: Union[str, List[str]]
-    ) -> DenseEmbedResponse:
+class HostedTextDenseModel(BaseTextDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
         payload = DenseEmbedRequest(input=text, model=self.model)
         return await self._make_call(self.url, payload, DenseEmbedResponse)
 
 
-class LocalDenseModel(BaseDenseModel):
-    async def get_dense_embeddings(
-        self, text: Union[str, List[str]]
-    ) -> DenseEmbedResponse:
+class LocalTextDenseModel(BaseTextDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
+        target_url = f"{self.url.rstrip('/')}/text-embedding"
+        payload = DenseEmbedRequest(input=text, dimension=self.mode_dim)
+        return await self._make_call(target_url, payload, DenseEmbedResponse)
+    
+
+# Code Dense Embeddings
+class BaseCodeDenseModel(BaseModel, DenseModelInterface):
+    def __init__(self):
+        super().__init__()
+        self.url      = str(os.getenv("CODE_DENSE_URL", ""))
+        self.api_key  = os.getenv("CODE_DENSE_API_KEY")
+        self.model    = os.getenv("CODE_DENSE_MODEL")
+        self.mode_dim = int(os.getenv("CODE_DENSE_MODEL_DIM", 0))
+
+
+class HostedCodeDenseModel(BaseCodeDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
+        payload = DenseEmbedRequest(input=text, model=self.model)
+        return await self._make_call(self.url, payload, DenseEmbedResponse)
+
+
+class LocalCodeDenseModel(BaseCodeDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
         target_url = f"{self.url.rstrip('/')}/text-embedding"
         payload = DenseEmbedRequest(input=text, dimension=self.mode_dim)
         return await self._make_call(target_url, payload, DenseEmbedResponse)
 
 
-class DenseModelFactory:
-    @staticmethod
-    def get_instance() -> DenseModelInterface:
-        if os.getenv("DENSE_HOSTED", "false").lower() == "true":
-            return HostedDenseModel()
-        return LocalDenseModel()
-
-
-
 class SparseModelInterface(ABC):
     @abstractmethod
-    async def get_sparse_embeddings(
-        self, text: Union[str, List[str]], top_k: int = 50
-    ) -> SparseEmbedResponse:
+    async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         pass
 
-
-class BaseSparseModel(BaseModel, SparseModelInterface):
+# Sparse Text Embeddings
+class BaseTextSparseModel(BaseModel, SparseModelInterface):
     def __init__(self):
         super().__init__()
-        self.url     = str(os.getenv("SPARSE_URL", ""))
-        self.api_key = os.getenv("SPARSE_API_KEY")
-        self.model   = os.getenv("SPARSE_MODEL")
+        self.url     = str(os.getenv("TEXT_SPARSE_URL", ""))
+        self.api_key = os.getenv("TEXT_SPARSE_API_KEY")
+        self.model   = os.getenv("TEXT_SPARSE_MODEL")
 
 
-class HostedSparseModel(BaseSparseModel):
-    async def get_sparse_embeddings(
-        self, text: Union[str, List[str]], top_k: int = 50
-    ) -> SparseEmbedResponse:
+class HostedTextSparseModel(BaseTextSparseModel):
+    async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         payload = SparseEmbedRequest(input=text, model=self.model, top_k=top_k)
         return await self._make_call(self.url, payload, SparseEmbedResponse)
 
 
-class LocalSparseModel(BaseSparseModel):
-    async def get_sparse_embeddings(
-        self, text: Union[str, List[str]], top_k: int = 50
-    ) -> SparseEmbedResponse:
+class LocalTextSparseModel(BaseTextSparseModel):
+    async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         target_url = f"{self.url.rstrip('/')}/sparse-text-embedding"
         payload = SparseEmbedRequest(input=text, top_k=top_k)
         return await self._make_call(target_url, payload, SparseEmbedResponse)
 
 
-class SparseModelFactory:
-    @staticmethod
-    def get_instance() -> SparseModelInterface:
-        if os.getenv("SPARSE_HOSTED", "false").lower() == "true":
-            return HostedSparseModel()
-        return LocalSparseModel()
-
-
-
 class RerankerInterface(ABC):
     @abstractmethod
-    async def rerank(
-        self, query: str, documents: list, top_n: int = 5
-    ) -> RerankResponse:
+    async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
         pass
 
 
@@ -263,9 +254,7 @@ class BaseReranker(BaseModel, RerankerInterface):
 
 
 class HostedReranker(BaseReranker):
-    async def rerank(
-        self, query: str, documents: list, top_n: int = 5
-    ) -> RerankResponse:
+    async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
         payload = RerankRequest(
             query=query,
             top_n=top_n,
@@ -277,9 +266,7 @@ class HostedReranker(BaseReranker):
 
 
 class LocalReranker(BaseReranker):
-    async def rerank(
-        self, query: str, documents: list, top_n: int = 5
-    ) -> RerankResponse:
+    async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
         target_url = f"{self.url.rstrip('/')}/text-cross-encoder"
         payload = RerankRequest(
             query=query,
@@ -290,9 +277,62 @@ class LocalReranker(BaseReranker):
         return await self._make_call(target_url, payload, RerankResponse)
 
 
-class RerankerFactory:
-    @staticmethod
-    def get_instance() -> RerankerInterface:
-        if os.getenv("RERANKER_HOSTED", "false").lower() == "true":
-            return HostedReranker()
-        return LocalReranker()
+class InferenceFactory:
+    _dense_registry:  Dict[str, Callable[[], DenseModelInterface]] = {}
+    _sparse_registry: Dict[str, Callable[[], SparseModelInterface]] = {}
+    _rerank_registry: Dict[str, Callable[[], RerankerInterface]] = {}
+
+    @classmethod
+    def register_dense(cls, name: str, creator_fn: Callable[[], DenseModelInterface]) -> None:
+        cls._dense_registry[name.lower()] = creator_fn
+
+    @classmethod
+    def register_sparse(cls, name: str, creator_fn: Callable[[], SparseModelInterface]) -> None:
+        cls._sparse_registry[name.lower()] = creator_fn
+
+    @classmethod
+    def register_reranker(cls, name: str, creator_fn: Callable[[], RerankerInterface]) -> None:
+        cls._rerank_registry[name.lower()] = creator_fn
+
+
+    @classmethod
+    def get_dense(cls, type_name: str) -> DenseModelInterface:
+        creator = cls._dense_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported dense model type '{type_name}'. Options: {list(cls._dense_registry.keys())}")
+        return creator()
+
+    @classmethod
+    def get_sparse(cls, type_name: str = "default") -> SparseModelInterface:
+        creator = cls._sparse_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported sparse model type '{type_name}'. Options: {list(cls._sparse_registry.keys())}")
+        return creator()
+
+    @classmethod
+    def get_reranker(cls, type_name: str = "default") -> RerankerInterface:
+        creator = cls._rerank_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported reranker type '{type_name}'. Options: {list(cls._rerank_registry.keys())}")
+        return creator()
+
+
+InferenceFactory.register_dense(
+    "text",
+    lambda: HostedTextDenseModel() if os.getenv("TEXT_DENSE_HOSTED", "false").lower() == "true" else LocalTextDenseModel()
+)
+
+InferenceFactory.register_dense(
+    "code",
+    lambda: HostedCodeDenseModel() if os.getenv("CODE_DENSE_HOSTED", "false").lower() == "true" else LocalCodeDenseModel()
+)
+
+InferenceFactory.register_sparse(
+    "text",
+    lambda: HostedTextSparseModel() if os.getenv("TEXT_SPARSE_HOSTED", "false").lower() == "true" else LocalTextSparseModel()
+)
+
+InferenceFactory.register_reranker(
+    "default",
+    lambda: HostedReranker() if os.getenv("RERANKER_HOSTED", "false").lower() == "true" else LocalReranker()
+)

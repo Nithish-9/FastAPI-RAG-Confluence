@@ -36,7 +36,7 @@ class DocumentIngestionService:
 
             logger.info(f"--- [Ingestor] Generating embeddings for {len(chunks)} chunks ---")
             texts = [c.page_content for c in chunks]
-            dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(texts)
+            dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings("text","text",texts)
 
 
             try:

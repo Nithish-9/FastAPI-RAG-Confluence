@@ -12,6 +12,7 @@ class CreateIndexRequest(BaseModel):
 
 
 class DeleteIndexRequest(BaseModel):
+    workspace_id : str = Field(..., description="SHA-256 of workspace root absolute path to purge the path_ids from the collection")
     path_ids: List[str] = Field(..., description="Batch of path_ids to purge from the collection")
 
 

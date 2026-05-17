@@ -1,7 +1,7 @@
 import logging
 import os
 from typing import List, Any
-from service.model_services import RerankerFactory
+from service.model_services import InferenceFactory
 from schemas.reranker_dto import RerankDocument
 
 logging.basicConfig(
@@ -15,7 +15,7 @@ DELAY = int(os.getenv("DELAY", 2))
 
 class RerankService:
     def __init__(self):
-        self.client = RerankerFactory.get_instance()
+        self.client = InferenceFactory.get_reranker()
 
     async def check_reranker_connectivity(self) -> bool:
         logger.info("--- [Reranker] Checking connectivity ---")

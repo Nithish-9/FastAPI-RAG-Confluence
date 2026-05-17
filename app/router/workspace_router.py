@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import aiofiles
 import os
+import asyncio
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -121,7 +122,7 @@ async def delete_index(
         return {"status": "success", "deleted_path_ids": 0}
 
     try:
-        await _run_delete(user_id, request.path_ids)
+        await _run_delete(user_id, request.workspace_id,request.path_ids)
         return {
             "status": "success",
             "deleted_path_ids": len(request.path_ids),
@@ -131,10 +132,9 @@ async def delete_index(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _run_delete(user_id: str, path_ids: list[str]):
-    import asyncio
+async def _run_delete(user_id: str, workspace_id: str,path_ids: list[str]):
     await asyncio.to_thread(
-        workspace_qdrant_service.delete_by_path_ids, user_id, path_ids
+        workspace_qdrant_service.delete_by_path_ids, user_id, workspace_id,path_ids
     )
 
 
@@ -160,6 +160,8 @@ async def retrieve(
 
     try:
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(
+            "code",
+            "text",
             [request.query]
         )
 

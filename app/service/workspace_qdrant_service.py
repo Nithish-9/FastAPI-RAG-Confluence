@@ -17,16 +17,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
+WORKSPACE_COLLECTION_DENSE_DIM = int(os.getenv("WORKSPACE_COLLECTION_DENSE_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("RETRIES", 5))
 QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
 
 WORKSPACE_COLLECTION = os.getenv(
     "WORKSPACE_COLLECTION", "Workspace_Knowledge_Base"
 )
-FINAL_COLLECTION_NAME = f"{WORKSPACE_COLLECTION}_{DENSE_MODEL_DIM}"
+FINAL_COLLECTION_NAME = f"{WORKSPACE_COLLECTION}_{WORKSPACE_COLLECTION_DENSE_DIM}"
 
 QDRANT_INDEXING_THREADS = int(os.getenv("QDRANT_INDEXING_THREADS", 0))
 DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
@@ -85,7 +86,7 @@ class WorkspaceQdrantService:
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=DENSE_MODEL_DIM,
+                    size=WORKSPACE_COLLECTION_DENSE_DIM,
                     distance=DISTANCE_METRIC,
                     on_disk=QDRANT_ON_DISK,
                     hnsw_config=models.HnswConfigDiff(
@@ -152,17 +153,15 @@ class WorkspaceQdrantService:
         )
         return len(results) > 0
 
-    def delete_by_path_ids(self, user_id: str, path_ids: list[str]):
-        """
-        Bulk-delete all chunks for the given path_ids, scoped to user_id.
-        user_id is mandatory — prevents a user from deleting another user's chunks
-        even if path_ids were somehow guessed or collided.
-        """
+    def delete_by_path_ids(self, user_id: str, workspace_id:str,path_ids: list[str]):
         if not path_ids:
             return
         must: List[models.Condition] = [
             models.FieldCondition(
                 key="user_id", match=models.MatchValue(value=user_id)
+            ),
+            models.FieldCondition(
+                key="workspace_id", match=models.MatchValue(value=workspace_id)
             ),
             models.FieldCondition(
                 key="path_id",
@@ -177,6 +176,7 @@ class WorkspaceQdrantService:
             f"--- [WorkspaceQdrant] Deleted chunks for {len(path_ids)} path_id(s) "
             f"user={user_id[:12]}... ---"
         )
+
 
     def upsert_chunks(
         self,
@@ -242,19 +242,14 @@ class WorkspaceQdrantService:
         self,
         query_text: str,
         query_dense: list[float],
-        query_sparse,           # SparseVector schema object
+        query_sparse,
         user_id: str,
         workspace_id: str,
         top_k: int = 5,
         path_id: str | None = None,
         chunk_index: int | None = None,
     ) -> list[dict]:
-        """
-        Hybrid RRF search scoped to user_id + workspace_id.
-        Optional path_id and chunk_index narrow the scope further (LLM follow-up calls).
-        Results are reranked before return.
-        """
-        # Build mandatory + optional filters
+
         must_conditions: List[models.Condition] = [
             models.FieldCondition(
                 key="user_id", match=models.MatchValue(value=user_id)
@@ -277,7 +272,7 @@ class WorkspaceQdrantService:
             )
 
         search_filter = models.Filter(must=must_conditions)
-        candidate_limit = top_k * 4
+        candidate_limit = top_k * 10 
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices,
@@ -286,8 +281,9 @@ class WorkspaceQdrantService:
 
         try:
             async with asyncio.timeout(QDRANT_TIMEOUT):
-                response = self.client.query_points(
-                collection_name=self.collection_name,
+                response = await asyncio.to_thread( 
+                    self.client.query_points,
+                    collection_name=self.collection_name,
                     prefetch=[
                         models.Prefetch(
                             query=query_dense,
@@ -307,10 +303,12 @@ class WorkspaceQdrantService:
                     limit=candidate_limit,
                 )
         except TimeoutError:
-            logger.error(f"--- [WorkspaceQdrant] Search timed out after {QDRANT_TIMEOUT}s ---")
+            logger.error(
+                f"--- [WorkspaceQdrant] Search timed out after {QDRANT_TIMEOUT}s ---"
+            )
             return []
         except Exception as e:
-            logger.error(f"--- [WorkspaceQdrant] Search failed to execute: {repr(e)} ---")
+            logger.error(f"--- [WorkspaceQdrant] Search failed: {repr(e)} ---")
             return []
 
         candidates = []
@@ -340,7 +338,21 @@ class WorkspaceQdrantService:
                 documents=candidates,
                 top_n=top_k,
             )
-            return reranked
+
+            filtered = [
+                r for r in reranked
+                if (r.get("rerank_score") or 0) > RERANK_THRESHOLD 
+            ]
+
+            if not filtered:
+                logger.warning(
+                    f"--- [WorkspaceQdrant] All {len(reranked)} results below "
+                    f"rerank threshold {RERANK_THRESHOLD} — returning empty ---"
+                )
+                return []
+
+            return filtered
+
         except Exception as e:
             logger.error(
                 f"--- [WorkspaceQdrant] Reranking failed, falling back to RRF: {repr(e)} ---"

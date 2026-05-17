@@ -21,6 +21,7 @@ languages = [
     "toml",
     "yaml",
     "json",
+    "xml",
 ]
 
 for lang in languages:

@@ -57,7 +57,7 @@ def test_delete_index():
 
     path_ids_payload = [t["path_id"] for t in deletion_targets]
 
-    print(f"Collected {len(path_ids_payload)} file path references for batch purge.")
+    print(f"Collected {len(path_ids_payload)} /workspace/delete-index path references for batch purge.")
     print(f"Targeting path_ids: {[p[:12] + '...' for p in path_ids_payload]}\n")
 
     # ── 2. Execute Batch Deletion ─────────────────────────────────────────────
@@ -65,7 +65,7 @@ def test_delete_index():
     resp = requests.post(
         f"{BASE_URL}/workspace/delete-index",
         headers={**headers, "Content-Type": "application/json"},
-        json={"path_ids": path_ids_payload},
+        json={"path_ids": path_ids_payload,"workspace_id" : workspace_id},
         timeout=30,
     )
 

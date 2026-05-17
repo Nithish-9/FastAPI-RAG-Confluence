@@ -71,31 +71,39 @@ app.include_router(workspace_router)
 
 async def initialize_all_components():
     results = await asyncio.gather(
-        enterprise_qdrant_service.init_collection(),
-        workspace_qdrant_service.init_collection(),
-        embed_service.check_dense_connectivity(),
+        asyncio.to_thread(enterprise_qdrant_service.init_collection),
+        asyncio.to_thread(workspace_qdrant_service.init_collection),
+        embed_service.check_dense_connectivity("text"),
+        embed_service.check_dense_connectivity("code"),
         embed_service.check_sparse_connectivity(),
         rerank_service.check_reranker_connectivity(),
         return_exceptions=True,
     )
 
-    is_qdrant           = results[0] if not isinstance(results[0], Exception) else False
-    is_workspace_qdrant = results[1] if not isinstance(results[1], Exception) else False
-    is_dense            = results[2] if not isinstance(results[2], Exception) else False
-    is_sparse           = results[3] if not isinstance(results[3], Exception) else False
-    is_rerank           = results[4] if not isinstance(results[4], Exception) else False
+    is_enterprise_qdrant = results[0] if not isinstance(results[0], Exception) else False
+    is_workspace_qdrant  = results[1] if not isinstance(results[1], Exception) else False
+    is_text_dense        = results[2] if not isinstance(results[2], Exception) else False
+    is_code_dense        = results[3] if not isinstance(results[3], Exception) else False  
+    is_text_sparse       = results[4] if not isinstance(results[4], Exception) else False  
+    is_rerank            = results[5] if not isinstance(results[5], Exception) else False  
 
-    system_state.set_vector_db_state(is_qdrant and is_workspace_qdrant)
-    system_state.set_dense_model_state(is_dense)
-    system_state.set_sparse_model_state(is_sparse)
+    system_state.set_enterprise_collection_state(is_enterprise_qdrant)
+    system_state.set_workspace_collection_state(is_workspace_qdrant)   
+    system_state.set_text_dense_model_state(is_text_dense)
+    system_state.set_code_dense_model_state(is_code_dense)
+    system_state.set_text_sparse_model_state(is_text_sparse)
     system_state.set_reranker_model_state(is_rerank)
 
-    if not all([is_qdrant, is_workspace_qdrant, is_dense, is_sparse, is_rerank]):
+    if not all([is_enterprise_qdrant, is_workspace_qdrant, is_text_dense,
+                is_code_dense, is_text_sparse, is_rerank]):
         logger.error(
             f"Initialization Failed: "
-            f"Q:{is_qdrant} WQ:{is_workspace_qdrant} "
-            f"D:{is_dense} S:{is_sparse} R:{is_rerank}"
+            f"EQ:{is_enterprise_qdrant} WQ:{is_workspace_qdrant} "
+            f"TD:{is_text_dense} CD:{is_code_dense} "
+            f"TS:{is_text_sparse} R:{is_rerank}"
         )
+    else:
+        logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
 
 
 @app.get("/health")
@@ -164,6 +172,8 @@ async def retrieve_rag_data(request: RAGQueryRequest):
 
     try:
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(
+            "text",
+            "text",
             [request.query]
         )
         results = await enterprise_qdrant_service.hybrid_search(

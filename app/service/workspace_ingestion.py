@@ -75,7 +75,7 @@ class WorkspaceIngestionService:
             return {"skipped": True, "reason": "content_id unchanged"}
 
         await asyncio.to_thread(
-            workspace_qdrant_service.delete_by_path_ids, user_id, [path_id]
+            workspace_qdrant_service.delete_by_path_ids, user_id, workspace_id, [path_id]
         )
 
         chunks = await asyncio.to_thread(
@@ -99,7 +99,7 @@ class WorkspaceIngestionService:
         )
 
         texts = [c.content for c in chunks] 
-        dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(texts)
+        dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings("code","text",texts)
 
         await asyncio.to_thread(
             workspace_qdrant_service.upsert_chunks,
