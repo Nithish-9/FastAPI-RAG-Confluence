@@ -46,7 +46,6 @@ async def lifespan(app: FastAPI):
     def on_init_complete(task):
         try:
             task.result()
-            logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
         except Exception as e:
             logger.error(
                 f"--- [SYSTEM] CRITICAL: Background initialization failed: {repr(e)} ---"
@@ -71,8 +70,8 @@ app.include_router(workspace_router)
 
 async def initialize_all_components():
     results = await asyncio.gather(
-        asyncio.to_thread(enterprise_qdrant_service.init_collection),
-        asyncio.to_thread(workspace_qdrant_service.init_collection),
+        enterprise_qdrant_service.init_collection(),
+        workspace_qdrant_service.init_collection(),
         embed_service.check_dense_connectivity("text"),
         embed_service.check_dense_connectivity("code"),
         embed_service.check_sparse_connectivity(),

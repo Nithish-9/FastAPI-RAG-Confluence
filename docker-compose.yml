@@ -82,10 +82,11 @@ services:
   rag-worker:
     init: true
     image: nithish1/rag:fastapi-amd64-2.0.0
-    container_name: rag-worker
     restart: unless-stopped
     networks:
       - rag-net
+    healthcheck:
+      disable: true
     command: >
       celery -A workers.ingest_worker worker
       --queues ingestion
