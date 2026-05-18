@@ -1,0 +1,28 @@
+# Heavyweight TOML AST Stress Test Configuration
+
+[engine]
+name = "Tree-Sitter TOML Driver"
+version = "2026.1.0"
+capabilities.indexing = true
+capabilities.query_matching = false
+
+[database.connection]
+host = "127.0.0.1"
+ports = [ 5432, 5433, 5434 ]
+timeout_bounds = 30.5
+
+[database.meta]
+# Date-time offsets and multi-line strings testing
+epoch_start = 2026-05-17T07:44:32Z
+manifest_raw = '''
+# Structural Schema Log
+mode = "strict_validation"
+'''
+
+[[cluster.nodes]]
+id = "edge-alpha"
+tier = "omega-north"
+
+[[cluster.nodes]]
+id = "edge-beta"
+tier = "omega-south"

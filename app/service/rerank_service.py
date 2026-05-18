@@ -1,38 +1,43 @@
 import logging
-import asyncio
-from service.model_services import RerankerFactory
-from schemas.reranker_dto import RerankDocument
 import os
+from typing import List, Any
+from service.model_services import InferenceFactory
+from schemas.reranker_dto import RerankDocument
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
-RETRIES = int(os.getenv("RETRIES", 5))
-DELAY = int(os.getenv("DELAY", 3))
+
+RETRIES = int(os.getenv("RETRIES", 3))
+DELAY = int(os.getenv("DELAY", 2))
 
 class RerankService:
     def __init__(self):
-        self.client = RerankerFactory.get_instance()
+        self.client = InferenceFactory.get_reranker()
 
     async def check_reranker_connectivity(self) -> bool:
         logger.info("--- [Reranker] Checking connectivity ---")
-        for attempt in range(RETRIES):
-            try:
-                dummy_doc = [RerankDocument(content="test")]
-                await self.client.rerank(query="ping", documents=dummy_doc, top_n=1)
-                logger.info("--- [Reranker] Service Ready ---")
-                return True
-            except Exception as e:
-                logger.warning(f"[Reranker] attempt {attempt + 1} failed: {repr(e)}")
-                if attempt < RETRIES - 1:
-                    await asyncio.sleep(DELAY)
+        try:
+            dummy_doc = [RerankDocument(content="ping")]
+            await self.client.rerank(query="ping", documents=dummy_doc, top_n=1)
+            logger.info("--- [Reranker] Service Ready ---")
+            return True
+        except Exception as e:
+            logger.error(f"--- [Reranker] Service unreachable: {repr(e)} ---")
+            return False
 
-        logger.error("--- [Reranker] Service unreachable after retries ---")
-        return False
-
-    async def rerank(self, query: str, documents: list, top_n: int = 5):
+    async def rerank(self, query: str, documents: List[dict], top_n: int = 5) -> List[dict]:
         if not documents:
             return []
 
         try:
+            MAX_RERANK_CANDIDATES = int(os.getenv("MAX_RERANK_CANDIDATES", 100))
+            if len(documents) > MAX_RERANK_CANDIDATES:
+                logger.warning(f"--- [Reranker] Truncating candidates from {len(documents)} to {MAX_RERANK_CANDIDATES} ---")
+                documents = documents[:MAX_RERANK_CANDIDATES]
+
             rerank_docs = [
                 RerankDocument(content=doc.get('content', '')) 
                 for doc in documents
@@ -46,14 +51,15 @@ class RerankService:
 
             reranked_results = []
             for item in response.data:
-                original_doc = documents[item.index]
-                original_doc['rerank_score'] = item.rerank_score
-                reranked_results.append(original_doc)
+                if item.index < len(documents):
+                    original_doc = documents[item.index]
+                    original_doc['rerank_score'] = item.rerank_score
+                    reranked_results.append(original_doc)
 
             return reranked_results
 
         except Exception as e:
-            logger.error(f"--- [Reranker] Scoring error: {repr(e)} ---")
+            logger.error(f"--- [Reranker] Scoring error: {repr(e)}. Falling back to initial order. ---")
             return documents[:top_n]
 
 rerank_service = RerankService()

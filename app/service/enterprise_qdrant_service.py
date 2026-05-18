@@ -1,29 +1,31 @@
 import uuid
 import os
+import asyncio 
+import logging
+import time
+
+from typing import List
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
-import logging
-import time
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
-
 logger = logging.getLogger(__name__)
 
-DENSE_MODEL_DIM = int(os.getenv("DENSE_MODEL_DIM", 768))
+ENTERPRISE_COLLECTION_DENSE_DIM = int(os.getenv("ENTERPRISE_COLLECTION_DENSE_DIM", 768))
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
-RETRIES = int(os.getenv("RETRIES", 5))
-DELAY = int(os.getenv("DELAY", 3))
+QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
+QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
 
-QDRANT_COLLECTION_BASE = os.getenv("QDRANT_COLLECTION_BASE", "Enterprise_Knowledge_Base")
-FINAL_COLLECTION_NAME = f"{QDRANT_COLLECTION_BASE}_{DENSE_MODEL_DIM}"
+ENTERPRISE_COLLECTION = os.getenv("ENTERPRISE_COLLECTION", "Enterprise_Knowledge_Base")
+FINAL_COLLECTION_NAME = f"{ENTERPRISE_COLLECTION}_{ENTERPRISE_COLLECTION_DENSE_DIM}"
 
-QDRANT_INDEXING_THREADS=int(os.getenv("QDRANT_INDEXING_THREADS", 0))
-
+QDRANT_INDEXING_THREADS = int(os.getenv("QDRANT_INDEXING_THREADS", 0))
 DIST_STR = os.getenv("DENSE_DISTANCE", "COSINE").upper()
 DISTANCE_METRIC = getattr(models.Distance, DIST_STR)
 
@@ -33,7 +35,7 @@ HNSW_EF_CONSTRUCT = int(os.getenv("HNSW_EF_CONSTRUCT", 100))
 HNSW_EF = int(os.getenv("HNSW_EF", 128))
 SPARSE_THRESHOLD = int(os.getenv("SPARSE_FULL_SCAN_THRESHOLD", 1000))
 
-class QdrantService:
+class EnterpriseQdrantService:
     def __init__(self):
         self.client = QdrantClient(
             host=QDRANT_HOST, 
@@ -42,39 +44,44 @@ class QdrantService:
         )
         self.collection_name = FINAL_COLLECTION_NAME
     
-    def init_qdrant(self, retries=RETRIES, delay=DELAY):
-        logger.info(f"--- [Qdrant] Initializing connection to {self.collection_name} ---")
+    async def init_collection(self, retries=QDRANT_RETRIES):
+        return await asyncio.to_thread(self._init_collection_sync, retries)
+
+    def _init_collection_sync(self, retries):
+        logger.info(f"--- [EnterpriseQdrant] Initializing connection to {self.collection_name} ---")
         
         for attempt in range(retries):
             try:
                 self.client.get_collection(self.collection_name)
-                logger.info(f"--- [Qdrant] Collection '{self.collection_name}' already exists. ---")
+                logger.info(
+                    f"--- [EnterpriseQdrant] Collection '{self.collection_name}' exists. ---"
+                )
                 return True 
-
+            
             except UnexpectedResponse as e:
                 if e.status_code == 404:
-                    logger.info(f"--- [Qdrant] Collection not found. Creating new schema... ---")
-                    self.create_collection()
+                    logger.info("--- [EnterpriseQdrant] Creating new collection... ---")
+                    self._create_collection()
                     return True 
-                else:
-                    logger.warning(f"[Qdrant] Unexpected response (Attempt {attempt+1}): {repr(e)}")
-            
+                raise e
             except Exception as e:
-                logger.warning(f"[Qdrant] Connection attempt {attempt+1} failed. Retrying in {delay}s...")
-            
-            time.sleep(delay)
-
-        logger.error("--- [Qdrant] Initialization FAILED: Could not connect to database. ---")
+                wait = min(2 ** (attempt + 1), 30) 
+                
+                if attempt < retries - 1:
+                    logger.warning(f"[EnterpriseQdrant] Attempt {attempt+1} failed. Retrying in {wait}s...")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"[EnterpriseQdrant] Max retries reached. Connection failed.")
+        
         return False
 
-    def create_collection(self):
-        logger.info(f"--- [Qdrant] Creating collection: {self.collection_name} ---")
-        
+    def _create_collection(self):
+        logger.info(f"--- [EnterpriseQdrant] Creating collection: {self.collection_name} ---")
         self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config={
                 "dense-vector": models.VectorParams(
-                    size=DENSE_MODEL_DIM,
+                    size=ENTERPRISE_COLLECTION_DENSE_DIM,
                     distance=DISTANCE_METRIC,
                     on_disk=QDRANT_ON_DISK,
                     hnsw_config=models.HnswConfigDiff(
@@ -94,18 +101,21 @@ class QdrantService:
                 )
             }
         )
-
         self.client.create_payload_index(
             collection_name=self.collection_name,
             field_name="page_id",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
-        logger.info(f"--- [Qdrant] Schema created with HNSW(M={HNSW_M}) and OnDisk={QDRANT_ON_DISK} ---")
-    
+        logger.info(f"--- [EnterpriseQdrant] Schema created with HNSW(M={HNSW_M}) and OnDisk={QDRANT_ON_DISK} ---")
+        logger.info(
+            f"--- [EnterpriseQdrant] Collection created with index on "
+            f"[page_id] ---"
+        )
+
     def close(self):
-        logger.info("--- [Qdrant] Closing client connection... ---")
+        logger.info("--- [EnterpriseQdrant] Closing client connection... ---")
         self.client.close()
-    
+
     def check_doc_changed(self, page_id: str) -> bool:
         results, _ = self.client.scroll(
             collection_name=self.collection_name,
@@ -128,14 +138,11 @@ class QdrantService:
             with_payload=True,
             with_vectors=False
         )
-        
         if not results:
             return True 
-        
         payload = results[0].payload
         if payload is None:
             return True
-
         old_hash = payload.get("content_hash")
         return old_hash != new_hash
 
@@ -146,7 +153,6 @@ class QdrantService:
                 indices=sparse_vecs[i].indices,
                 values=sparse_vecs[i].values
             )
-            
             page_id = chunk.metadata["page_id"]
             idx = chunk.metadata["chunk_index"]
             point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{page_id}_{idx}"))
@@ -159,11 +165,7 @@ class QdrantService:
                 },
                 payload={**chunk.metadata, "content": chunk.page_content}
             ))
-
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points
-        )
+        self.client.upsert(collection_name=self.collection_name, points=points)
 
     def delete_chunks(self, page_id: str):
         self.client.delete(
@@ -173,66 +175,101 @@ class QdrantService:
             )
         )
 
-    async def hybrid_search(self, query_text, query_dense, query_sparse, limit=5, page_id=None, chunk_index=None):
-        filter_conditions = []
+    async def hybrid_search(
+        self,
+        query_text: str,
+        query_dense: list,
+        query_sparse,
+        limit: int = 5,
+        page_id: str | None = None,
+        chunk_index: int | None = None,
+    ) -> list[dict]:
+
+        filter_conditions: List[models.Condition] = []   
         if page_id:
-            filter_conditions.append(models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id)))
+            filter_conditions.append(
+                models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))
+            )
         if chunk_index is not None:
-            filter_conditions.append(models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index)))
+            filter_conditions.append(
+                models.FieldCondition(key="chunk_index", match=models.MatchValue(value=chunk_index))
+            )
 
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-
-        candidate_limit = limit * 4 
+        candidate_limit = limit * 10 
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices,
-            values=query_sparse.values
+            values=query_sparse.values,
         )
 
-        response = self.client.query_points(
-            collection_name=self.collection_name,
-            prefetch=[
-                models.Prefetch(
-                    query=query_dense,
-                    using="dense-vector",
+        try:
+            async with asyncio.timeout(QDRANT_TIMEOUT):
+                response = await asyncio.to_thread(
+                    self.client.query_points,
+                    collection_name=self.collection_name,
+                    prefetch=[
+                        models.Prefetch(
+                            query=query_dense,
+                            using="dense-vector",
+                            limit=candidate_limit,
+                            filter=search_filter,
+                            params=models.SearchParams(hnsw_ef=HNSW_EF),
+                        ),
+                        models.Prefetch(
+                            query=sparse_query,
+                            using="sparse-vector",
+                            limit=candidate_limit,
+                            filter=search_filter,
+                        ),
+                    ],
+                    query=models.FusionQuery(fusion=models.Fusion.RRF),
                     limit=candidate_limit,
-                    filter=search_filter,
-                    params=models.SearchParams(hnsw_ef=HNSW_EF)
-                ),
-                models.Prefetch(
-                    query=sparse_query,
-                    using="sparse-vector",
-                    limit=candidate_limit,
-                    filter=search_filter
-                ),
-            ],
-            query=models.FusionQuery(fusion=models.Fusion.RRF),
-            limit=candidate_limit
-        )
+                )
+        except TimeoutError:
+            logger.error(f"--- [EnterpriseQdrant] Search timed out after {QDRANT_TIMEOUT}s ---")
+            return []
+        except Exception as e:
+            logger.error(f"--- [EnterpriseQdrant] Search failed: {repr(e)} ---")
+            return []
 
         candidates = []
         for point in response.points:
             if point.payload:
                 candidates.append({
-                    "content": point.payload.get("content", ""),
-                    "metadata": point.payload,
-                    "rrf_score": point.score
+                    "content":   point.payload.get("content", ""),
+                    "metadata":  point.payload,
+                    "rrf_score": point.score, 
                 })
 
         if not candidates:
             return []
 
         try:
-            
-            final_results = await rerank_service.rerank(
-                query=query_text, 
-                documents=candidates, 
-                top_n=limit
+            reranked = await rerank_service.rerank(
+                query=query_text,
+                documents=candidates,
+                top_n=limit,
             )
-            return final_results
-            
+
+            filtered = [
+                r for r in reranked
+                if (r.get("rerank_score") or 0) > RERANK_THRESHOLD
+            ]
+
+            if not filtered:
+                logger.warning(
+                    f"--- [EnterpriseQdrant] All {len(reranked)} results below "
+                    f"rerank threshold {RERANK_THRESHOLD} — returning empty ---"
+                )
+                return []
+
+            return filtered
+
         except Exception as e:
-            logger.error(f"--- [Qdrant] Reranking failed, falling back to RRF: {repr(e)} ---")
+            logger.error(
+                f"--- [EnterpriseQdrant] Reranking failed, falling back to RRF: {repr(e)} ---"
+            )
             return candidates[:limit]
     
-qdrant_service = QdrantService()
+enterprise_qdrant_service = EnterpriseQdrantService()

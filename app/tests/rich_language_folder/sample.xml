@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="compiler_view.xsl"?>
+<manifest:pipeline 
+    xmlns:manifest="https://company.indexer.com/schema/manifest"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    systemVersion="2026.1.0">
+
+    <manifest:engineProperties id="indexer_core_01">
+        <clusterTier>omega-north-edge</clusterTier>
+        <activeWorkers status="MAX_CAPACITY">16</activeWorkers>
+        <isHealthy /> <!-- Self-closing void tag tracking -->
+    </manifest:engineProperties>
+
+    <manifest:payloadCollection>
+        <packet sequence="1002" byteSize="2048" />
+        <packet sequence="1003" byteSize="4096" />
+    </manifest:payloadCollection>
+
+    <!-- Testing string escape mechanisms inside structural parsers -->
+    <manifest:scriptContext language="javascript">
+        <![CDATA[
+        function processNodeAST(node) {
+            if (node.byteSize > 2048 && node.status !== "FAILED") {
+                return true;
+            }
+            return false;
+        }
+        ]]>
+    </manifest:scriptContext>
+</manifest:pipeline>

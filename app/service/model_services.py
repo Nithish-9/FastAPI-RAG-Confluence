@@ -1,56 +1,215 @@
 import os
+import asyncio
+import logging
+import urllib3
+
 import httpx
 from abc import ABC, abstractmethod
-from typing import List, Union
+from typing import List, Optional, Union, Dict, Callable, Any
 
-from schemas.dense_dto import (DenseEmbedRequest, DenseEmbedResponse)
-from schemas.sparse_dto import (SparseEmbedRequest, SparseEmbedResponse,)
-from schemas.reranker_dto import (RerankRequest, RerankResponse)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-import urllib3
-import logging
+from schemas.dense_dto import DenseEmbedRequest, DenseEmbedResponse
+from schemas.sparse_dto import SparseEmbedRequest, SparseEmbedResponse
+from schemas.reranker_dto import RerankRequest, RerankResponse
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
 logger = logging.getLogger(__name__)
+
+
+TOTAL_TIMEOUT    = float(os.getenv("HTTP_TOTAL_TIMEOUT", 300.0))   
+CONNECT_TIMEOUT  = float(os.getenv("HTTP_CONNECT_TIMEOUT", 15.0))  
+
+MAX_CONNECTIONS  = int(os.getenv("HTTP_MAX_CONNECTIONS", 100))
+MAX_KEEPALIVE    = int(os.getenv("HTTP_MAX_KEEPALIVE", 20))
+VERIFY_SSL       = os.getenv("HTTP_VERIFY_SSL", "true").lower() == "true"
+
+MAX_RETRIES      = int(os.getenv("INFERENCE_MAX_RETRIES", 3))
+RETRY_MIN        = int(os.getenv("INFERENCE_RETRY_MIN_WAIT", 2))
+RETRY_MAX        = int(os.getenv("INFERENCE_RETRY_MAX_WAIT", 10))
+
+_CLIENT_OPTIONS = {
+    "timeout": httpx.Timeout(
+        TOTAL_TIMEOUT,
+        connect=CONNECT_TIMEOUT,
+    ),
+    "verify": VERIFY_SSL,
+    "limits": httpx.Limits(
+        max_connections=MAX_CONNECTIONS,
+        max_keepalive_connections=MAX_KEEPALIVE,
+    ),
+}
+
+# ── Shared HTTP client — event-loop aware ─────────────────────────────────────
+# httpx.AsyncClient is bound to the event loop it was created in.
+# Celery workers create a new event loop per task via asyncio.run(), so we
+# must detect loop changes and recreate the client accordingly.
+
+_shared_client: Optional[httpx.AsyncClient] = None
+_client_loop:   Optional[asyncio.AbstractEventLoop] = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _shared_client, _client_loop
+
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    need_new_client = (
+        _shared_client is None
+        or _shared_client.is_closed
+        or _client_loop is not current_loop
+    )
+
+    if need_new_client:
+        if _shared_client is not None and not _shared_client.is_closed:
+            logger.warning(
+                "[HTTP] Event loop changed — recreating HTTP client. "
+                "Old client will be garbage collected."
+            )
+        logger.info(
+            f"--- [HTTP] Creating shared AsyncClient "
+            f"(pool={MAX_CONNECTIONS}, keepalive={MAX_KEEPALIVE}, "
+            f"timeout={TOTAL_TIMEOUT}s) ---"
+        )
+        _shared_client = httpx.AsyncClient(**_CLIENT_OPTIONS)
+        _client_loop = current_loop
+
+    assert _shared_client is not None
+    return _shared_client
+
+
+async def close_http_client() -> None:
+    """
+    Gracefully close the shared HTTP client.
+    Called from FastAPI lifespan shutdown so connections are cleanly drained.
+    """
+    global _shared_client, _client_loop
+    if _shared_client is not None and not _shared_client.is_closed:
+        await _shared_client.aclose()
+        logger.info("--- [HTTP] Shared AsyncClient closed ---")
+    _shared_client = None
+    _client_loop   = None
+
+
+def inference_retry():
+    return retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=RETRY_MIN, max=RETRY_MAX),
+        retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.RequestError)),
+        before_sleep=lambda state: logger.warning(
+            f"[HTTP] Retrying inference call — attempt {state.attempt_number}, "
+            f"wait {state.next_action.sleep if state.next_action else 0:.1f}s"
+        ),
+        reraise=True,
+    )
+
+
+class BaseModel(ABC):
+    """
+    Base for all inference clients.
+    Uses the shared event-loop-aware HTTP client.
+    """
+    api_key: Optional[str] = None
+
+    def __init__(self):
+        pass
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        return get_http_client()
+
+    @inference_retry()
+    async def _make_call(
+        self,
+        url: str,
+        payload: Union[DenseEmbedRequest, SparseEmbedRequest, RerankRequest],
+        response_model,
+    ):
+        headers = (
+            {"Authorization": f"Bearer {self.api_key}"}
+            if self.api_key
+            else {}
+        )
+
+        response = await self.client.post(
+            url,
+            json=payload.model_dump(exclude_none=True),
+            headers=headers,
+        )
+
+        if response.status_code != 200:
+            logger.warning(
+                f"[HTTP] Non-200 from {url}: "
+                f"{response.status_code} — {response.text[:200]}"
+            )
+
+        response.raise_for_status()
+        return response_model(**response.json())
+
+
 
 class DenseModelInterface(ABC):
     @abstractmethod
-    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
+    async def get_dense_embeddings(self, text: Union[str, List[str], Any]) -> DenseEmbedResponse:
         pass
 
-class BaseDenseModel(DenseModelInterface):
+# Text Dense Embeddings
+class BaseTextDenseModel(BaseModel, DenseModelInterface):
     def __init__(self):
-        self.url = str(os.getenv("DENSE_URL"))
-        self.api_key = os.getenv("DENSE_API_KEY")
-        self.model = os.getenv("DENSE_MODEL")
-        self.mode_dim = int(os.getenv("DENSE_MODEL_DIM", 0))
+        super().__init__()
+        self.url      = str(os.getenv("TEXT_DENSE_URL", ""))
+        self.api_key  = os.getenv("TEXT_DENSE_API_KEY")
+        self.model    = os.getenv("TEXT_DENSE_MODEL")
+        self.mode_dim = int(os.getenv("TEXT_DENSE_MODEL_DIM", 0))
 
-    async def _make_call(self, url: str, payload: DenseEmbedRequest) -> DenseEmbedResponse:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
-            response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
-            logger.info(f"Raw Response from {url}: {response.text}")
-            response.raise_for_status()
-            return DenseEmbedResponse(**response.json())
 
-class HostedDenseModel(BaseDenseModel):
+class HostedTextDenseModel(BaseTextDenseModel):
     async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
         payload = DenseEmbedRequest(input=text, model=self.model)
-        return await self._make_call(self.url, payload)
+        return await self._make_call(self.url, payload, DenseEmbedResponse)
 
-class LocalDenseModel(BaseDenseModel):
+
+class LocalTextDenseModel(BaseTextDenseModel):
     async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
         target_url = f"{self.url.rstrip('/')}/text-embedding"
         payload = DenseEmbedRequest(input=text, dimension=self.mode_dim)
-        return await self._make_call(target_url, payload)
+        return await self._make_call(target_url, payload, DenseEmbedResponse)
+    
 
-class DenseModelFactory:
-    @staticmethod
-    def get_instance() -> DenseModelInterface:
-        if os.getenv("DENSE_HOSTED", "false").lower() == "true":
-            return HostedDenseModel()
-        return LocalDenseModel()
+# Code Dense Embeddings
+class BaseCodeDenseModel(BaseModel, DenseModelInterface):
+    def __init__(self):
+        super().__init__()
+        self.url      = str(os.getenv("CODE_DENSE_URL", ""))
+        self.api_key  = os.getenv("CODE_DENSE_API_KEY")
+        self.model    = os.getenv("CODE_DENSE_MODEL")
+        self.mode_dim = int(os.getenv("CODE_DENSE_MODEL_DIM", 0))
+
+
+class HostedCodeDenseModel(BaseCodeDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
+        payload = DenseEmbedRequest(input=text, model=self.model)
+        return await self._make_call(self.url, payload, DenseEmbedResponse)
+
+
+class LocalCodeDenseModel(BaseCodeDenseModel):
+    async def get_dense_embeddings(self, text: Union[str, List[str]]) -> DenseEmbedResponse:
+        target_url = f"{self.url.rstrip('/')}/text-embedding"
+        payload = DenseEmbedRequest(input=text, dimension=self.mode_dim)
+        return await self._make_call(target_url, payload, DenseEmbedResponse)
 
 
 class SparseModelInterface(ABC):
@@ -58,37 +217,26 @@ class SparseModelInterface(ABC):
     async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         pass
 
-class BaseSparseModel(SparseModelInterface):
+# Sparse Text Embeddings
+class BaseTextSparseModel(BaseModel, SparseModelInterface):
     def __init__(self):
-        self.url = str(os.getenv("SPARSE_URL"))
-        self.api_key = os.getenv("SPARSE_API_KEY")
-        self.model = os.getenv("SPARSE_MODEL")
+        super().__init__()
+        self.url     = str(os.getenv("TEXT_SPARSE_URL", ""))
+        self.api_key = os.getenv("TEXT_SPARSE_API_KEY")
+        self.model   = os.getenv("TEXT_SPARSE_MODEL")
 
-    async def _make_call(self, url: str, payload: SparseEmbedRequest) -> SparseEmbedResponse:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
-            response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
-            logger.info(f"Raw Response from {url}: {response.text}")
-            response.raise_for_status()
-            return SparseEmbedResponse(**response.json())
 
-class HostedSparseModel(BaseSparseModel):
+class HostedTextSparseModel(BaseTextSparseModel):
     async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         payload = SparseEmbedRequest(input=text, model=self.model, top_k=top_k)
-        return await self._make_call(self.url, payload)
+        return await self._make_call(self.url, payload, SparseEmbedResponse)
 
-class LocalSparseModel(BaseSparseModel):
+
+class LocalTextSparseModel(BaseTextSparseModel):
     async def get_sparse_embeddings(self, text: Union[str, List[str]], top_k: int = 50) -> SparseEmbedResponse:
         target_url = f"{self.url.rstrip('/')}/sparse-text-embedding"
         payload = SparseEmbedRequest(input=text, top_k=top_k)
-        return await self._make_call(target_url, payload)
-
-class SparseModelFactory:
-    @staticmethod
-    def get_instance() -> SparseModelInterface:
-        if os.getenv("SPARSE_HOSTED", "false").lower() == "true":
-            return HostedSparseModel()
-        return LocalSparseModel()
+        return await self._make_call(target_url, payload, SparseEmbedResponse)
 
 
 class RerankerInterface(ABC):
@@ -96,34 +244,95 @@ class RerankerInterface(ABC):
     async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
         pass
 
-class BaseReranker(RerankerInterface):
-    def __init__(self):
-        self.url = str(os.getenv("RERANKER_URL"))
-        self.api_key = os.getenv("RERANKER_API_KEY")
-        self.model = os.getenv("RERANKER_MODEL")
 
-    async def _make_call(self, url: str, payload: RerankRequest) -> RerankResponse:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        async with httpx.AsyncClient(timeout=120.0,verify=False) as client:
-            response = await client.post(url, json=payload.model_dump(exclude_none=True), headers=headers)
-            logger.info(f"Raw Response from {url}: {response.text}")
-            response.raise_for_status()
-            return RerankResponse(**response.json())
+class BaseReranker(BaseModel, RerankerInterface):
+    def __init__(self):
+        super().__init__()
+        self.url     = str(os.getenv("RERANKER_URL", ""))
+        self.api_key = os.getenv("RERANKER_API_KEY")
+        self.model   = os.getenv("RERANKER_MODEL")
+
 
 class HostedReranker(BaseReranker):
     async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
-        payload = RerankRequest(query=query, top_n=top_n, documents=documents, model=self.model, return_documents=True)
-        return await self._make_call(self.url, payload)
+        payload = RerankRequest(
+            query=query,
+            top_n=top_n,
+            documents=documents,
+            model=self.model,
+            return_documents=True,
+        )
+        return await self._make_call(self.url, payload, RerankResponse)
+
 
 class LocalReranker(BaseReranker):
     async def rerank(self, query: str, documents: list, top_n: int = 5) -> RerankResponse:
         target_url = f"{self.url.rstrip('/')}/text-cross-encoder"
-        payload = RerankRequest(query=query, top_n=top_n, documents=documents, return_documents=True)
-        return await self._make_call(target_url, payload)
+        payload = RerankRequest(
+            query=query,
+            top_n=top_n,
+            documents=documents,
+            return_documents=True,
+        )
+        return await self._make_call(target_url, payload, RerankResponse)
 
-class RerankerFactory:
-    @staticmethod
-    def get_instance() -> RerankerInterface:
-        if os.getenv("RERANKER_HOSTED", "false").lower() == "true":
-            return HostedReranker()
-        return LocalReranker()
+
+class InferenceFactory:
+    _dense_registry:  Dict[str, Callable[[], DenseModelInterface]] = {}
+    _sparse_registry: Dict[str, Callable[[], SparseModelInterface]] = {}
+    _rerank_registry: Dict[str, Callable[[], RerankerInterface]] = {}
+
+    @classmethod
+    def register_dense(cls, name: str, creator_fn: Callable[[], DenseModelInterface]) -> None:
+        cls._dense_registry[name.lower()] = creator_fn
+
+    @classmethod
+    def register_sparse(cls, name: str, creator_fn: Callable[[], SparseModelInterface]) -> None:
+        cls._sparse_registry[name.lower()] = creator_fn
+
+    @classmethod
+    def register_reranker(cls, name: str, creator_fn: Callable[[], RerankerInterface]) -> None:
+        cls._rerank_registry[name.lower()] = creator_fn
+
+
+    @classmethod
+    def get_dense(cls, type_name: str) -> DenseModelInterface:
+        creator = cls._dense_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported dense model type '{type_name}'. Options: {list(cls._dense_registry.keys())}")
+        return creator()
+
+    @classmethod
+    def get_sparse(cls, type_name: str = "default") -> SparseModelInterface:
+        creator = cls._sparse_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported sparse model type '{type_name}'. Options: {list(cls._sparse_registry.keys())}")
+        return creator()
+
+    @classmethod
+    def get_reranker(cls, type_name: str = "default") -> RerankerInterface:
+        creator = cls._rerank_registry.get(type_name.lower())
+        if not creator:
+            raise ValueError(f"Unsupported reranker type '{type_name}'. Options: {list(cls._rerank_registry.keys())}")
+        return creator()
+
+
+InferenceFactory.register_dense(
+    "text",
+    lambda: HostedTextDenseModel() if os.getenv("TEXT_DENSE_HOSTED", "false").lower() == "true" else LocalTextDenseModel()
+)
+
+InferenceFactory.register_dense(
+    "code",
+    lambda: HostedCodeDenseModel() if os.getenv("CODE_DENSE_HOSTED", "false").lower() == "true" else LocalCodeDenseModel()
+)
+
+InferenceFactory.register_sparse(
+    "text",
+    lambda: HostedTextSparseModel() if os.getenv("TEXT_SPARSE_HOSTED", "false").lower() == "true" else LocalTextSparseModel()
+)
+
+InferenceFactory.register_reranker(
+    "default",
+    lambda: HostedReranker() if os.getenv("RERANKER_HOSTED", "false").lower() == "true" else LocalReranker()
+)

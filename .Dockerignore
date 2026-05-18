@@ -4,5 +4,7 @@ __pycache__
 node_modules
 .env
 model_cache
-qdrant_data
+qdrant_data/
 .venv/
+app/temp_uploads/
+app/tests/

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/partial-config.json",
+  "engine_metadata": {
+    "name": "Tree-Sitter Structural Indexer",
+    "version": "2026.1.0",
+    "build_flags": ["O3", "native", "lto"],
+    "is_active": true,
+    "system_hex": "\u0041\u0053\u0054"
+  },
+  "cluster_matrix": [
+    {
+      "node_id": "88af12-bc90",
+      "capacity_ratio": 0.875,
+      "parent_node": null
+    },
+    {
+      "node_id": "99b034-de11",
+      "capacity_ratio": 1.0,
+      "parent_node": "88af12-bc90"
+    }
+  ],
+  "empty_collection_stub": {}
+}

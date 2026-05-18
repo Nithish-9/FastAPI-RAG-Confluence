@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="index, follow">
+    <title>Heavyweight HTML AST Stress Test File</title>
+
+    <!-- 1. Embedded Styling Injection Language Boundary Check -->
+    <style>
+        :root { --framework-accent: #2563eb; }
+        .indexer-frame { display: flex; content-visibility: auto; }
+        /* Validating CSS parsing safely contained inside an HTML layout */
+        main > section[data-status="active"]::before {
+            content: "❖ ";
+            color: var(--framework-accent);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 2. Semantic Document Structure & Microdata Annotations -->
+    <header class="site-header" role="banner">
+        <nav aria-label="Main Lifecycle Directory">
+            <ul>
+                <li><a href="#core-metrics" class="nav-link active">Pipeline Indices</a></li>
+                <li><a href="/archive/download?id=9921&amp;tier=omega" target="_blank" rel="noopener noreferrer">Download Manifest</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main class="execution-stage" itemscope itemtype="https://schema.org/SoftwareApplication">
+        <h1 itemprop="name">Tree-Sitter HTML Stress Framework</h1>
+        
+        <!-- 3. Sectioning, Void Elements, and Global Custom Attributes -->
+        <section id="core-metrics" data-pipeline-stage="ingestion" data-active-workers="4">
+            <h2>Operational Stream Matrix</h2>
+            <p>This paragraph contains text formatting markers like <strong>strong emphasis</strong>, <em>regular italics</em>, and <code class="language-token">code_identifier_nodes</code>. Here is a line break:<br>and a horizontal rule void element:</p>
+            <hr>
+        </section>
+
+        <!-- 4. Advanced Inter-Element Forms, Constraints, and Attributes -->
+        <section id="control-panel">
+            <h3>Configuration Panel Interface</h3>
+            <form action="/api/v1/evaluate" method="POST" enctype="multipart/form-data" novalidate>
+                <fieldset>
+                    <legend>Allocation Parameters</legend>
+                    
+                    <!-- Text input with autocomplete, pattern constraints, and autofocus -->
+                    <div class="form-group">
+                        <label for="cluster-token">Security Ingestion Token:</label>
+                        <input type="text" id="cluster-token" name="token" required 
+                               pattern="[A-Z0-9]{16}" placeholder="XXXX-XXXX-XXXX-XXXX" 
+                               autofocus autocomplete="one-time-code">
+                    </div>
+
+                    <!-- Number slider bounding validation criteria -->
+                    <div class="form-group">
+                        <label for="batch-scaling">Batch Scale Size (0.5x increments):</label>
+                        <input type="range" id="batch-scaling" name="scale" min="1" max="10" step="0.5" value="2.5">
+                        <output for="batch-scaling">2.5</output>
+                    </div>
+
+                    <!-- Boolean selection attributes using raw flags (selected, disabled) -->
+                    <div class="form-group">
+                        <label for="environment-selector">Deployment Target:</label>
+                        <select id="environment-selector" name="environment">
+                            <option value="dev">Local Stage Instance</option>
+                            <option value="prod" selected>Production Cluster Node (Omega-East)</option>
+                            <option value="dr" disabled>Disaster Recovery Failover Space</option>
+                        </select>
+                    </div>
+                </fieldset>
+
+                <button type="submit" name="action" value="execute_bounds">Dispatch Simulation Pipeline</button>
+            </form>
+        </section>
+
+        <!-- 5. Interactive Table Matrix Structures (Colspan, Rowspan, Headers) -->
+        <section id="data-view">
+            <h3>Compiled Leaf-Node Analytics</h3>
+            <table>
+                <caption>AST Structural Processing Log Mapping</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Leaf Node Index</th>
+                        <th scope="col">Target Identifier</th>
+                        <th scope="col" colspan="2">Latency Vector Bounds</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <th scope="row">#0821</th>
+                        <td>Rust Core Engine</td>
+                        <td>12.45 ms</td>
+                        <td rowspan="2">SATURATED</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">#0944</th>
+                        <td>TypeScript Component</td>
+                        <td>94.10 ms</td>
+                    </tr>
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <th scope="row" colspan="2">Aggregated System Baseline Evaluation</th>
+                        <td colspan="2">53.27 ms (Average)</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </section>
+
+        <!-- 6. Vector Graphics (SVG) Language Injection Boundary -->
+        <section id="graphics-stream">
+            <h3>Status Indicator Vector Graphic</h3>
+            <!-- Inline SVG tests tag namespaces, nested paths, and numeric rendering attributes -->
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="48" height="48" aria-hidden="true" class="icon-pulse">
+                <circle cx="12" cy="12" r="10" fill="#eff6ff" stroke="#2563eb" stroke-width="2" />
+                <path d="M12 8v8M8 12h8" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <small>&copy; 2026 Core Indexer Services Framework. All access pathways restricted.</small>
+    </footer>
+
+    <!-- 7. Embedded Scripting Injection Language Boundary Check -->
+    <script type="module">
+        import { initializeParser } from './modules/tree_sitter_helper.js';
+        
+        // Validating JavaScript parsing safely contained inside an HTML layout
+        const rangeInput = document.getElementById('batch-scaling');
+        rangeInput?.addEventListener('input', (event) => {
+            const outputField = document.querySelector('output[for="batch-scaling"]');
+            if (outputField) {
+                outputField.textContent = event.target.value;
+            }
+        });
+    </script>
+</body>
+</html>
