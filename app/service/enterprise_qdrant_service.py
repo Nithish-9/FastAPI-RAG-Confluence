@@ -167,12 +167,21 @@ class EnterpriseQdrantService:
             ))
         self.client.upsert(collection_name=self.collection_name, points=points)
 
-    def delete_chunks(self, page_id: str):
+    def delete_by_page_ids(self, page_ids: list[str]):
+        if not page_ids:
+            return
+        must: List[models.Condition] = [
+            models.FieldCondition(
+                key="path_id",
+                match=models.MatchAny(any=page_ids),
+            ),
+        ]
         self.client.delete(
             collection_name=self.collection_name,
-            points_selector=models.Filter(
-                must=[models.FieldCondition(key="page_id", match=models.MatchValue(value=page_id))]
-            )
+            points_selector=models.Filter(must=must),
+        )
+        logger.info(
+            f"--- [EnterpriseQdrant] Deleted chunks for {len(page_ids)} page_id(s) "
         )
 
     async def hybrid_search(

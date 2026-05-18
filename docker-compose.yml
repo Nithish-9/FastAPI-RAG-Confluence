@@ -55,6 +55,7 @@ services:
 
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_BACKEND_URL=redis://redis:6379/1
+      - UVICORN_WORKERS=4
 
     depends_on:
       qdrant:
@@ -89,7 +90,7 @@ services:
       disable: true
     command: >
       celery -A workers.ingest_worker worker
-      --queues ingestion
+      --queues workspace_ingestion,enterprise_ingestion
       --concurrency 4
       --max-tasks-per-child 100
       --loglevel info
@@ -140,6 +141,7 @@ services:
 
       - REDIS_BROKER_URL=redis://redis:6379/0
       - REDIS_BACKEND_URL=redis://redis:6379/1
+      - UVICORN_WORKERS=4
 
     depends_on:
       qdrant:

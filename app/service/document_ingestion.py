@@ -41,7 +41,7 @@ class DocumentIngestionService:
 
             try:
                 logger.info(f"--- [Ingestor] Removing stale data for {page_id} ---")
-                await asyncio.to_thread(enterprise_qdrant_service.delete_chunks, page_id)
+                await asyncio.to_thread(enterprise_qdrant_service.delete_by_page_ids, [page_id])
                 
                 logger.info(f"--- [Ingestor] Upserting {len(chunks)} new chunks to Qdrant ---")
                 await asyncio.to_thread(

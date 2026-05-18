@@ -384,9 +384,6 @@ def _treesitter_chunks(
 
 
 class CodeParser:
-    """
-    Main entry point. Call parse_file() to get a list of CodeChunk objects.
-    """
 
     _fallback_splitter = RecursiveCharacterTextSplitter(
         chunk_size=FALLBACK_CHUNK_SIZE,

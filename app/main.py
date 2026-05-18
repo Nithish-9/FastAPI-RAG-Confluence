@@ -1,5 +1,4 @@
 import os
-import uuid
 import logging
 import asyncio
 from contextlib import asynccontextmanager
@@ -15,20 +14,18 @@ except Exception as e:
     exit(1)
 
 import uvicorn
-from fastapi import FastAPI, Request, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse
-
-from service import document_processor
-from schemas.rag_dto import RAGQueryRequest
+from fastapi import FastAPI
 from service.generate_embedding import embed_service
 from service.enterprise_qdrant_service import enterprise_qdrant_service
 from service.workspace_qdrant_service import workspace_qdrant_service
 from core.state import system_state
 from service.rerank_service import rerank_service
 from router.workspace_router import router as workspace_router
+from router.enterprise_router import router as enterprise_router
 from service.model_services import close_http_client
 
 PORT = int(os.getenv("APP_PORT", 9000))
+UVICORN_WORKERS = int(os.getenv("UVICORN_WORKERS", 4))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,8 +62,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.include_router(workspace_router)
+@app.get("/health")
+async def health():
+    return system_state.get_status()
 
+app.include_router(workspace_router)
+app.include_router(enterprise_router)
 
 async def initialize_all_components():
     results = await asyncio.gather(
@@ -105,89 +106,5 @@ async def initialize_all_components():
         logger.info("--- [SYSTEM] Core Infra Ready: All Systems Go ---")
 
 
-@app.get("/health")
-async def health():
-    return system_state.get_status()
-
-
-@app.post("/webhook/confluence")
-async def ingest_confluence_webhook(request: Request):
-    data = await request.json()
-    asyncio.create_task(_background_task(data, "CONFLUENCE"))
-    return {"status": "success", "message": "Confluence ingestion queued"}
-
-
-@app.post("/documentupload")
-async def upload_document(file: UploadFile = File(...)):
-    if not system_state.is_system_ready():
-        return JSONResponse(
-            status_code=503,
-            content={"status": "loading", "message": "Services unavailable or warming up"},
-        )
-
-    file_id = str(uuid.uuid4())
-    temp_path = os.path.join(
-        "temp_uploads",
-        f"{file_id}{os.path.splitext(file.filename or '')[1]}",
-    )
-    os.makedirs("temp_uploads", exist_ok=True)
-
-    with open(temp_path, "wb") as buffer:
-        while chunk := await file.read(1024 * 1024):
-            buffer.write(chunk)
-
-    doc_data = {"file_path": temp_path, "filename": file.filename}
-    asyncio.create_task(_background_task(doc_data, "FILE"))
-
-    return {"status": "success", "message": f"File {file.filename} queued"}
-
-
-async def _background_task(data: dict, source_type: str):
-    """
-    Async background task — runs the document processor and cleans up temp
-    files. Uses asyncio.to_thread for any blocking I/O inside document_processor.
-    """
-    try:
-        await document_processor.extract(data, source_type)
-    except Exception as e:
-        logger.error(f"Worker Error [{source_type}]: {repr(e)}")
-    finally:
-        if source_type == "FILE":
-            f_path = data.get("file_path", "")
-            if f_path and os.path.exists(f_path):
-                try:
-                    os.remove(f_path)
-                    logger.info(f"Cleanup: Removed {f_path}")
-                except Exception as e:
-                    logger.warning(f"Cleanup Failed for {f_path}: {e}")
-
-
-@app.post("/rag/retrieve")
-async def retrieve_rag_data(request: RAGQueryRequest):
-    if not system_state.is_system_ready():
-        raise HTTPException(
-            status_code=503, detail="Search infrastructure is not fully ready"
-        )
-
-    try:
-        dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(
-            "text",
-            "text",
-            [request.query]
-        )
-        results = await enterprise_qdrant_service.hybrid_search(
-            query_text=request.query,
-            query_dense=dense_vecs[0],
-            query_sparse=sparse_vecs[0],
-            limit=request.top_k,
-            page_id=request.page_id,
-            chunk_index=request.chunk_index,
-        )
-        return {"status": "success", "count": len(results), "data": results}
-    except Exception as e:
-        logger.error(f"RAG Error: {repr(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False,workers=4)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False,workers=UVICORN_WORKERS)
