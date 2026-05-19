@@ -19,7 +19,7 @@ from service.workspace_qdrant_service import workspace_qdrant_service
 from celery.result import AsyncResult
 from workers.ingest_worker import celery_app
 from service.workspace_ingestion import decode_user_identity
-from utils import require_system_ready
+from router.utils import require_system_ready
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +57,7 @@ async def create_index(
     """
     Ingest a single workspace file.
 
-    The Go client (nexus) sends this as multipart/form-data.
+    The client sends this as multipart/form-data.
     Dedup: if (path_id + content_id) already exists, ingestion is skipped.
     """
     require_system_ready()
@@ -101,7 +101,7 @@ async def delete_index(
     """
     Bulk-delete all chunks for the given path_ids.
 
-    The Go delete-worker calls this with node.ChildFilePathIDs so it never
+    The delete-worker calls this with node.ChildFilePathIDs so it never
     has to traverse sub-trees again.
     """
     require_system_ready()

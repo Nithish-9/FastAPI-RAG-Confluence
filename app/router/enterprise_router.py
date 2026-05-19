@@ -14,7 +14,7 @@ from schemas.enterprise_dto import DeleteIndexRequest, EnterpriseRetrieveRequest
 from service.generate_embedding import embed_service
 from service.enterprise_qdrant_service import enterprise_qdrant_service
 from workers.ingest_worker import celery_app, ingest_enterprise_task, ingest_confluence_task
-from utils import require_system_ready
+from router.utils import require_system_ready
 
 logging.basicConfig(
     level=logging.INFO,
