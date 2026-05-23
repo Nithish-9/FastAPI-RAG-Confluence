@@ -11,7 +11,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", 32))
+EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", 8))
 
 
 class EmbeddingService:
@@ -56,6 +56,13 @@ class EmbeddingService:
 
         for i in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[i : i + EMBED_BATCH_SIZE]
+            batch_chars = sum(len(t) for t in batch)
+            logger.info(
+                f"[Embed Batch] "
+                f"chunks={len(batch)} "
+                f"chars={batch_chars}"
+            )
+            
             logger.info(f"--- [Embed] Processing batch {i//EMBED_BATCH_SIZE + 1} (size: {len(batch)}) ---")
             
             try:

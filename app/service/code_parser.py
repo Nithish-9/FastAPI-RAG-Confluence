@@ -16,6 +16,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+import os
+
+
 def _load_language(name: str) -> Optional[Language]:
     try:
         pack_name = _PACK_NAME_MAP.get(name, name)
@@ -231,9 +234,20 @@ EXT_TO_LANG: dict[str, str] = {
     ".doc":       "docx",
 }
 
+
+
 OVERLAP_CHARS = 50
 FALLBACK_CHUNK_SIZE = 1000
 FALLBACK_OVERLAP = 100
+
+MAX_CHUNK_CHARS  = int(os.getenv("MAX_CHUNK_CHARS",  "2500"))
+SOFT_CHUNK_CHARS = int(os.getenv("SOFT_CHUNK_CHARS", "1500"))
+_PREAMBLE_CHARS  = int(os.getenv("PREAMBLE_CHARS",   "200"))
+
+_sub_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=SOFT_CHUNK_CHARS,
+    chunk_overlap=OVERLAP_CHARS,
+)
 
 
 @dataclass
@@ -336,36 +350,109 @@ def _regex_split(source: str, lang: str) -> list[Tuple[str, Optional[str]]]:
     return chunks if chunks else [(source, None)]
 
 
+
 def _treesitter_chunks(
     source_bytes: bytes,
     lang_name: str,
     language: Language,
-) -> list[Tuple[str, Optional[str], int, int]]:
+) -> list[tuple[str, Optional[str], int, int]]:
     """
-    Returns list of (raw_text, symbol_name, start_line, end_line).
+    Recursively walks the AST, always preferring leaf-level extraction.
+    A node is only emitted when:
+      - it has no target-type children (true leaf in our semantic tree), OR
+      - it fits within MAX_CHUNK_CHARS AND has no further splittable children
+    If even a leaf exceeds MAX_CHUNK_CHARS, it is character-split as last resort.
     """
     parser = Parser(language)
-    tree = parser.parse(source_bytes)
+    tree   = parser.parse(source_bytes)
     target_types = set(LANGUAGE_NODE_TYPES.get(lang_name, []))
 
-    results: list[Tuple[str, Optional[str], int, int]] = []
-    collected_ranges: list[Tuple[int, int]] = []
+    results: list[tuple[str, Optional[str], int, int]]  = []
+    collected_ranges: list[tuple[int, int]]              = []
 
-    def _walk(node):
-        if node.type in target_types:
-            text = source_bytes[node.start_byte:node.end_byte].decode(errors="replace")
-            symbol = _extract_symbol_name(node, source_bytes)
-            results.append((text, symbol, node.start_point[0], node.end_point[0]))
-            collected_ranges.append((node.start_byte, node.end_byte))
-            return  
-        for child in node.children:
-            _walk(child)
+    def _build_preamble(node) -> str:
+        """
+        First _PREAMBLE_CHARS of a node — used as context header when
+        a child chunk needs to know which class/function it belongs to.
+        """
+        raw = source_bytes[node.start_byte:node.end_byte].decode(errors="replace")
+        return raw[:_PREAMBLE_CHARS].rstrip() + "\n# ...\n"
+
+    def _emit_leaf(
+        text: str,
+        symbol: Optional[str],
+        sl: int,
+        el: int,
+        preamble: str,
+    ) -> None:
+        """
+        Terminal emitter. Prepends preamble, then enforces MAX_CHUNK_CHARS
+        via character splitting if needed.
+        """
+        full_text = (preamble + text) if preamble else text
+
+        if len(full_text) <= MAX_CHUNK_CHARS:
+            results.append((full_text, symbol, sl, el))
+            return
+
+        sub_chunks = _sub_splitter.split_text(full_text)
+        for i, sub in enumerate(sub_chunks):
+            # Re-attach preamble on every continuation so each sub-chunk
+            # carries context even when retrieved in isolation
+            if i > 0 and preamble:
+                sub = preamble + sub
+            results.append((sub, symbol, sl, el))
+
+    def _walk(node, preamble: str = "") -> None:
+        """
+        Recursively walk target-type nodes.
+
+        Decision tree at each node:
+          1. Not a target type?        → walk children, pass preamble down
+          2. Target type, has target-type children?
+               → always recurse deeper; emit a "skeleton" of this node
+                 (signature + gaps between children) so context is preserved
+          3. Target type, no target-type children (semantic leaf)?
+               → emit via _emit_leaf (handles oversized via char-split)
+        """
+        if node.type not in target_types:
+            for child in node.children:
+                _walk(child, preamble)
+            return
+
+
+        text   = source_bytes[node.start_byte:node.end_byte].decode(errors="replace")
+        symbol = _extract_symbol_name(node, source_bytes)
+        sl, el = node.start_point[0], node.end_point[0]
+        collected_ranges.append((node.start_byte, node.end_byte))
+
+        # Find direct children that are themselves target types
+        target_children = [c for c in node.children if c.type in target_types]
+
+        if not target_children:
+            _emit_leaf(text, symbol, sl, el, preamble)
+            return
+
+        # ── CASE 2: has semantic children — recurse deeper ────────────────
+        # Build this node's preamble for its children
+        node_preamble = _build_preamble(node)
+
+        # Emit the "skeleton": signature + non-child content (fields,
+        # decorators, class-level constants — anything between methods)
+        skeleton = _extract_skeleton(node, source_bytes, target_children)
+        if skeleton.strip() and len(skeleton.strip()) > 20:
+            _emit_leaf(skeleton, symbol, sl, el, preamble)
+
+        # Recurse into every target-type child with this node's preamble
+        for child in target_children:
+            _walk(child, preamble=node_preamble)
 
     _walk(tree.root_node)
 
+    # ── module-level leftover (imports, globals, top-level constants) ─────────
     if collected_ranges:
-        collected_ranges.sort(key=lambda x: x[0])
-        leftover_parts = []
+        collected_ranges.sort(key=lambda r: r[0])
+        leftover_parts: list[bytes] = []
         prev_end = 0
         for start, end in collected_ranges:
             if start > prev_end:
@@ -376,12 +463,60 @@ def _treesitter_chunks(
 
         leftover_text = b"".join(leftover_parts).decode(errors="replace").strip()
         if leftover_text and len(leftover_text) > 20:
-            # Tag with language name so module-level chunks carry language signal
             tagged = f"# {lang_name} module-level code\n{leftover_text}"
-            results.insert(0, (tagged, "module-level", 0, 0))
+            # module-level code emitted first — provides import/global context
+            # for all subsequent chunks
+            module_chunks: list[tuple[str, Optional[str], int, int]] = []
+            _emit_leaf_standalone(tagged, "module-level", 0, 0, "", module_chunks)
+            results[0:0] = module_chunks   # prepend
 
     return results
 
+
+def _extract_skeleton(
+    node,
+    source_bytes: bytes,
+    target_children: list,
+) -> str:
+    """
+    Returns the text of node with the byte ranges of its target-type
+    children removed — i.e. the class/struct skeleton: its signature,
+    field declarations, class-level constants, decorators.
+
+    Example for a Python class:
+        class Foo(Bar):
+            CONSTANT = 42          # kept   (not a function/class)
+            def method(self): ...  # removed (extracted separately)
+    """
+    child_ranges = sorted((c.start_byte, c.end_byte) for c in target_children)
+    parts: list[bytes] = []
+    prev = node.start_byte
+    for start, end in child_ranges:
+        if start > prev:
+            parts.append(source_bytes[prev:start])
+        prev = max(prev, end)
+    if prev < node.end_byte:
+        parts.append(source_bytes[prev:node.end_byte])
+    return b"".join(parts).decode(errors="replace")
+
+def _emit_leaf_standalone(
+    text: str,
+    symbol: Optional[str],
+    sl: int,
+    el: int,
+    preamble: str,
+    out: list,
+) -> None:
+    """Same logic as _emit_leaf but writes to an external list."""
+    full_text = (preamble + text) if preamble else text
+    if len(full_text) <= MAX_CHUNK_CHARS:
+        out.append((full_text, symbol, sl, el))
+        return
+    sub_chunks = _sub_splitter.split_text(full_text)
+    for i, sub in enumerate(sub_chunks):
+        if i > 0 and preamble:
+            sub = preamble + sub
+        out.append((sub, symbol, sl, el))
 
 class CodeParser:
 

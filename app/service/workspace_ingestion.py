@@ -98,7 +98,23 @@ class WorkspaceIngestionService:
             f"({chunks[0].language}) ---"
         )
 
-        texts = [c.content for c in chunks] 
+        texts = []
+        sizes = []
+
+        for c in chunks:
+            texts.append(c.content)
+            sizes.append(len(c.content))
+
+        if sizes:
+            logger.info(
+                f"Chunk stats "
+                f"count={len(sizes)} "
+                f"min={min(sizes)} "
+                f"max={max(sizes)} "
+                f"avg={sum(sizes)/len(sizes):.2f} "
+                f"total={sum(sizes)}"
+            )
+
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings("code","text",texts)
 
         await asyncio.to_thread(
