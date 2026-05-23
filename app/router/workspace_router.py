@@ -6,9 +6,7 @@ import os
 import asyncio
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 
-from core.state import system_state
 from schemas.workspace_dto import (
     DeleteIndexRequest,
     WorkspaceChunkResult,
@@ -16,11 +14,12 @@ from schemas.workspace_dto import (
     WorkspaceRetrieveResponse,
 )
 from service.generate_embedding import embed_service
-from workers.ingest_worker import ingest_file_task
+from workers.ingest_worker import ingest_workspace_task
 from service.workspace_qdrant_service import workspace_qdrant_service
 from celery.result import AsyncResult
 from workers.ingest_worker import celery_app
 from service.workspace_ingestion import decode_user_identity
+from router.utils import require_system_ready
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,14 +31,6 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 
 MAX_FILE_SIZE_MB = 50
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-
-
-def _require_system_ready():
-    if not system_state.is_system_ready():
-        raise HTTPException(
-            status_code=503,
-            detail="Search infrastructure is not fully ready. Retry shortly.",
-        )
 
 
 def _require_user_header(x_user_email: str | None) -> str:
@@ -66,10 +57,10 @@ async def create_index(
     """
     Ingest a single workspace file.
 
-    The Go client (nexus) sends this as multipart/form-data.
+    The client sends this as multipart/form-data.
     Dedup: if (path_id + content_id) already exists, ingestion is skipped.
     """
-    _require_system_ready()
+    require_system_ready()
     raw_header = _require_user_header(x_user_email)
 
     file_bytes = await file_data.read(MAX_FILE_SIZE_BYTES + 1)
@@ -84,7 +75,7 @@ async def create_index(
         await f.write(file_bytes)
 
     try:
-        task = ingest_file_task.delay(
+        task = ingest_workspace_task.delay(
             file_path=temp_path, 
             file_name=file_name,
             file_extension=file_extension,
@@ -110,10 +101,10 @@ async def delete_index(
     """
     Bulk-delete all chunks for the given path_ids.
 
-    The Go delete-worker calls this with node.ChildFilePathIDs so it never
+    The delete-worker calls this with node.ChildFilePathIDs so it never
     has to traverse sub-trees again.
     """
-    _require_system_ready()
+    require_system_ready()
     raw_header = _require_user_header(x_user_email)
 
     user_id, _ = decode_user_identity(raw_header)
@@ -153,7 +144,7 @@ async def retrieve(
     Returns reranked results with full metadata so the LLM can reason about
     which file / symbol each chunk belongs to.
     """
-    _require_system_ready()
+    require_system_ready()
     raw_header = _require_user_header(x_user_email)
 
     user_id, _ = decode_user_identity(raw_header)
