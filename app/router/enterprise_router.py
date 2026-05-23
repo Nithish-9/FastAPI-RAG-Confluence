@@ -7,13 +7,11 @@ import asyncio
 
 import aiofiles
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from celery.result import AsyncResult
 
-from core.state import system_state
 from schemas.enterprise_dto import DeleteIndexRequest, EnterpriseRetrieveRequest
 from service.generate_embedding import embed_service
 from service.enterprise_qdrant_service import enterprise_qdrant_service
-from workers.ingest_worker import celery_app, ingest_enterprise_task, ingest_confluence_task
+from workers.ingest_worker import ingest_confluence_task
 from router.utils import require_system_ready
 
 logging.basicConfig(
@@ -32,11 +30,6 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 async def create_index(file: UploadFile = File(...)):
     """
     Ingest a single enterprise document (PDF, DOCX, TXT, …).
-
-    Saves the upload to shared storage and queues an
-    ingest_enterprise_task on the 'enterprise_ingestion' Celery queue.
-    The worker delegates to document_processor.extract() which owns
-    loading → hashing → dedup → chunking → embedding → upsert.
     """
     require_system_ready()
 
@@ -47,24 +40,43 @@ async def create_index(file: UploadFile = File(...)):
             detail=f"File exceeds maximum allowed size of {MAX_FILE_SIZE_MB} MB.",
         )
 
-    file_id = str(uuid.uuid4())
-    ext = os.path.splitext(file.filename or "")[1]
+    file_id   = str(uuid.uuid4())
+    job_id    = str(uuid.uuid4())
+    ext       = os.path.splitext(file.filename or "")[1]
     temp_path = f"/shared/uploads/enterprise_{file_id}{ext}"
 
     async with aiofiles.open(temp_path, "wb") as f:
         await f.write(file_bytes)
 
+    from workers.job_status import init_job
+    await init_job(job_id, file.filename or "")
+
     try:
-        task = ingest_enterprise_task.delay(
-            file_path=temp_path,
-            file_name=file.filename,
+        from workers.ingest_worker import chunk_enterprise_task
+        chunk_enterprise_task.apply_async(
+            kwargs={"job_id": job_id, "file_path": temp_path,
+                    "file_name": file.filename},
+            queue="enterprise_chunk",
         )
-        return {"status": "queued", "task_id": task.id, "file_name": file.filename}
+        return {"status": "queued", "job_id": job_id, "file_name": file.filename}
     except Exception as e:
         logger.error(f"[EnterpriseRouter] create-index error: {repr(e)}")
         if os.path.exists(temp_path):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/index-status/{job_id}")
+async def index_status(job_id: str):
+    """
+    End-to-end status across all 3 pipeline stages.
+    Status: CHUNKING → EMBEDDING → DONE | SKIPPED | FAILED
+    """
+    from workers.job_status import get_job
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_id not found")
+    return job
 
 
 @router.post("/webhook/confluence")
@@ -133,12 +145,3 @@ async def retrieve(request: EnterpriseRetrieveRequest):
         logger.error(f"[EnterpriseRouter] retrieve error: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@router.get("/index-status/{task_id}")
-async def index_status(task_id: str):
-    result = AsyncResult(task_id, app=celery_app)
-    return {
-        "task_id": task_id,
-        "status": result.status,
-        "result": result.result if result.ready() else None,
-    }

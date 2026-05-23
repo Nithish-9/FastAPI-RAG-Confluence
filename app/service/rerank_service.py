@@ -10,8 +10,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-RETRIES = int(os.getenv("RETRIES", 3))
-DELAY = int(os.getenv("DELAY", 2))
 
 class RerankService:
     def __init__(self):

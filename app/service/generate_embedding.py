@@ -45,38 +45,48 @@ class EmbeddingService:
             return False
 
     async def get_combined_embeddings(
-        self, dense_type: str, sparse_type: str, texts: List[str]
-    ) -> Tuple[List[List[float]], List[dict]]:
-        
-        all_dense = []
-        all_sparse = []
+        self,
+        dense_type: str,
+        sparse_type: str,
+        texts: List[str],
+        batch_size: int | None = None,     
+    ) -> Tuple[List[List[float]], List[Any]]:   # List[Any] = SparseEmbedding objects
+        all_dense: List[List[float]] = []
+        all_sparse: List[Any] = []
 
-        dense_client = InferenceFactory.get_dense(dense_type)
+        dense_client  = InferenceFactory.get_dense(dense_type)
         sparse_client = InferenceFactory.get_sparse(sparse_type)
 
-        for i in range(0, len(texts), EMBED_BATCH_SIZE):
-            batch = texts[i : i + EMBED_BATCH_SIZE]
+        # streaming_embed passes pre-batched texts (len == batch_size already),
+        # so effective_batch_size = len(texts) in that path → single iteration,
+        # no redundant re-batching. 
+        effective_batch_size = batch_size or EMBED_BATCH_SIZE
+
+        for i in range(0, len(texts), effective_batch_size):
+            batch = texts[i : i + effective_batch_size]
             batch_chars = sum(len(t) for t in batch)
+
             logger.info(
                 f"[Embed Batch] "
+                f"batch={i // effective_batch_size + 1} "
                 f"chunks={len(batch)} "
                 f"chars={batch_chars}"
             )
-            
-            logger.info(f"--- [Embed] Processing batch {i//EMBED_BATCH_SIZE + 1} (size: {len(batch)}) ---")
-            
+
             try:
-                dense_task = dense_client.get_dense_embeddings(batch)
-                sparse_task = sparse_client.get_sparse_embeddings(batch)
-                
-                dense_res, sparse_res = await asyncio.gather(dense_task, sparse_task)
-                
+                dense_res, sparse_res = await asyncio.gather(
+                    dense_client.get_dense_embeddings(batch),
+                    sparse_client.get_sparse_embeddings(batch),
+                )
+
                 all_dense.extend([item.embedding for item in dense_res.data])
                 all_sparse.extend([item.embedding for item in sparse_res.data])
 
             except Exception as e:
-                logger.error(f"--- [Embed] Error in batch starting at index {i}: {repr(e)} ---")
-                raise e
+                logger.error(
+                    f"--- [Embed] Error in batch starting at index {i}: {repr(e)} ---"
+                )
+                raise
 
         return all_dense, all_sparse
 

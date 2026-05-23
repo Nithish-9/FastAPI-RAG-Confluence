@@ -8,6 +8,7 @@ from typing import List
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
+from workers.chunk_io import stream_embedded_batch, safe_remove
 
 logging.basicConfig(
     level=logging.INFO,
@@ -145,27 +146,82 @@ class EnterpriseQdrantService:
             return True
         old_hash = payload.get("content_hash")
         return old_hash != new_hash
+    
 
-    def upsert_chunks(self, chunks, dense_vecs, sparse_vecs):
-        points = []
-        for i, chunk in enumerate(chunks):
-            sparse_dict = models.SparseVector(
-                indices=sparse_vecs[i].indices,
-                values=sparse_vecs[i].values
-            )
-            page_id = chunk.metadata["page_id"]
-            idx = chunk.metadata["chunk_index"]
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{page_id}_{idx}"))
+    def upsert_from_emb_file(
+        self,
+        emb_jsonl_path: str,
+        page_id: str,
+    ) -> dict:
+        """
+        Reads one .emb.jsonl batch, bulk-upserts to enterprise collection.
+        Per-point isolation: bad point is skipped, rest of batch continues.
+        """
+        points  = []
+        skipped = 0
 
-            points.append(models.PointStruct(
-                id=point_id,
-                vector={
-                    "dense-vector": dense_vecs[i], 
-                    "sparse-vector": sparse_dict 
-                },
-                payload={**chunk.metadata, "content": chunk.page_content}
-            ))
-        self.client.upsert(collection_name=self.collection_name, points=points)
+        for record in stream_embedded_batch(emb_jsonl_path):
+            try:
+                chunk       = record["chunk"]
+                dense_vec   = record["dense_vec"]
+                sparse_idxs = record["sparse_indices"]
+                sparse_vals = record["sparse_values"]
+
+                if not dense_vec or not sparse_idxs:
+                    logger.warning(
+                        f"[EnterpriseDBWrite] Skipping chunk_index="
+                        f"{chunk.get('chunk_index')} — empty vector"
+                    )
+                    skipped += 1
+                    continue
+
+                idx      = chunk.get("chunk_index", 0)
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{page_id}_{idx}"))
+
+                payload = {**chunk.get("metadata", {}), "content": chunk.get("content", "")}
+
+                points.append(
+                    models.PointStruct(
+                        id=point_id,
+                        vector={
+                            "dense-vector":  dense_vec,
+                            "sparse-vector": models.SparseVector(
+                                indices=sparse_idxs,
+                                values=sparse_vals,
+                            ),
+                        },
+                        payload=payload,
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    f"[EnterpriseDBWrite] Skipping malformed record "
+                    f"in {emb_jsonl_path}: {repr(e)}"
+                )
+                skipped += 1
+                continue
+
+        upserted = 0
+        if points:
+            try:
+                enterprise_qdrant_service.client.upsert(
+                    collection_name=enterprise_qdrant_service.collection_name,
+                    points=points,
+                )
+                upserted = len(points)
+                logger.info(
+                    f"[EnterpriseDBWrite] Upserted {upserted} points "
+                    f"page_id={page_id[:12]}... skipped={skipped}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[EnterpriseDBWrite] Qdrant upsert failed "
+                    f"for {emb_jsonl_path}: {repr(e)}"
+                )
+                raise
+
+        safe_remove(emb_jsonl_path)
+        return {"upserted": upserted, "skipped": skipped}
 
     def delete_by_page_ids(self, page_ids: list[str]):
         if not page_ids:

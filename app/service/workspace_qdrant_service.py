@@ -10,6 +10,7 @@ import asyncio
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 from service.rerank_service import rerank_service
+from workers.chunk_io import stream_embedded_batch, safe_remove
 
 logging.basicConfig(
     level=logging.INFO,
@@ -178,65 +179,103 @@ class WorkspaceQdrantService:
         )
 
 
-    def upsert_chunks(
+    def upsert_from_emb_file(
         self,
-        chunks,     
-        dense_vecs: list,
-        sparse_vecs: list,
-        user_id: str,
-        email_id: str,
-        content_id: str,
-        workspace_id: str,
-        path_id: str,
-        path: str,
-        file_name: str,
-        file_extension: str,
-    ):
-        points = []
-        for i, chunk in enumerate(chunks):
-            sparse_dict = models.SparseVector(
-                indices=sparse_vecs[i].indices,
-                values=sparse_vecs[i].values,
-            )
-            # Deterministic point ID: user_id scoped — prevents cross-user point ID collision
-            # even if two users index identical files at the same path.
-            point_id = str(
-                uuid.uuid5(uuid.NAMESPACE_DNS, f"{user_id}_{path_id}_{chunk.chunk_index}")
-            )
-            points.append(
-                models.PointStruct(
-                    id=point_id,
-                    vector={
-                        "dense-vector": dense_vecs[i],
-                        "sparse-vector": sparse_dict,
-                    },
-                    payload={
-                        # Identity / isolation
-                        "user_id": user_id,
-                        "email_id": email_id,
-                        "workspace_id": workspace_id,
-                        "path_id": path_id,
-                        "path": path,
-                        # File metadata
-                        "file_name": file_name,
-                        "file_extension": file_extension,
-                        "content_id": content_id,
-                        # Chunk metadata (from tree-sitter)
-                        "chunk_index": chunk.chunk_index,
-                        "symbol": chunk.symbol,
-                        "language": chunk.language,
-                        # Content stored for retrieval
-                        "content": chunk.content,   # header + code (shown to LLM)
-                        "raw_content": chunk.raw_content,  # code only (for debug)
-                    },
-                )
-            )
+        emb_jsonl_path: str,
+        upsert_meta: dict,
+    ) -> dict:
+        """
+        Reads one .emb.jsonl batch file from disk, builds Qdrant PointStructs,
+        bulk-upserts in one call, then deletes the batch file.
+        """
+        user_id        = upsert_meta["user_id"]
+        email_id       = upsert_meta["email_id"]
+        content_id     = upsert_meta["content_id"]
+        workspace_id   = upsert_meta["workspace_id"]
+        path_id        = upsert_meta["path_id"]
+        path           = upsert_meta["path"]
+        file_name      = upsert_meta["file_name"]
+        file_extension = upsert_meta["file_extension"]
 
-        self.client.upsert(collection_name=self.collection_name, points=points)
-        logger.info(
-            f"--- [WorkspaceQdrant] Upserted {len(points)} chunks "
-            f"for path_id={path_id[:12]}... ---"
-        )
+        points  = []
+        skipped = 0
+
+        for record in stream_embedded_batch(emb_jsonl_path):
+            try:
+                chunk       = record["chunk"]
+                dense_vec   = record["dense_vec"]
+                sparse_idxs = record["sparse_indices"]
+                sparse_vals = record["sparse_values"]
+
+                if not dense_vec or not sparse_idxs:
+                    logger.warning(
+                        f"[WorkspaceQdrant] Skipping chunk_index="
+                        f"{chunk.get('chunk_index')} — empty vector"
+                    )
+                    skipped += 1
+                    continue
+
+                point_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"{user_id}_{path_id}_{chunk['chunk_index']}",
+                    )
+                )
+                points.append(
+                    models.PointStruct(
+                        id=point_id,
+                        vector={
+                            "dense-vector": dense_vec,
+                            "sparse-vector": models.SparseVector(
+                                indices=sparse_idxs,
+                                values=sparse_vals,
+                            ),
+                        },
+                        payload={
+                            "user_id":        user_id,
+                            "email_id":       email_id,
+                            "workspace_id":   workspace_id,
+                            "path_id":        path_id,
+                            "path":           path,
+                            "file_name":      file_name,
+                            "file_extension": file_extension,
+                            "content_id":     content_id,
+                            "chunk_index":    chunk["chunk_index"],
+                            "symbol":         chunk.get("symbol"),
+                            "language":       chunk.get("language"),
+                            "content":        chunk["content"],
+                            "raw_content":    chunk.get("raw_content", ""),
+                        },
+                    )
+                )
+            except Exception as e:
+                logger.error(
+                    f"[WorkspaceQdrant] Skipping malformed record in "
+                    f"{emb_jsonl_path}: {repr(e)}"
+                )
+                skipped += 1
+                continue
+
+        upserted = 0
+        if points:
+            try:
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=points,
+                )
+                upserted = len(points)
+                logger.info(
+                    f"[WorkspaceQdrant] Upserted {upserted} points "
+                    f"path_id={path_id[:12]}... skipped={skipped}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"[WorkspaceQdrant] Upsert failed for {emb_jsonl_path}: {repr(e)}"
+                )
+                raise
+
+        safe_remove(emb_jsonl_path)
+        return {"upserted": upserted, "skipped": skipped}
 
     async def hybrid_search(
         self,
