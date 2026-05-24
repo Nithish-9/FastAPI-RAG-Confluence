@@ -1,3 +1,8 @@
+nithish.s@0325LTPB0124281 ~ % docker exec -it distributed-indexer-chunk-worker-1 /bin/sh
+# ls
+__pycache__  core  main.py  preload_treesitter.py  qdrant_config.yml  requirements.txt	router	schemas  service  temp_uploads	tests  workers
+# 
+
 Traceback (most recent call last):
   File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
     R = retval = fun(*args, **kwargs)
