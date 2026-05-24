@@ -1,7 +1,7 @@
 services:
   rag-fastapi:
     init: true
-    image: nithish1/rag:fastapi-amd64-2.0.0
+    image: nithish1/rag:fastapi-arm64-3.0.2
     container_name: rag-fastapi
     restart: unless-stopped
     networks:
@@ -11,7 +11,7 @@ services:
     env_file:
       - rag.env
     environment:
-      UVICORN_WORKERS: 4
+      UVICORN_WORKERS: 1
 
     depends_on:
       qdrant:
@@ -86,7 +86,7 @@ services:
 
   mis-jina-embeddings-v2-base-code:
     init: true
-    image: nithish1/mis:jina-embeddings-v2-base-code-1.0.0
+    image: nithish1/mis:jina-embeddings-v2-base-code-arm64-1.2.0
     container_name: mis-jina-embeddings-v2-base-code
     ports:
       - "8001:8000"
@@ -102,7 +102,7 @@ services:
   
   mis-dense-nomic-text:
     init: true
-    image: nithish1/mis:dense-nomic-text-1.0.0
+    image: nithish1/mis:dense-nomic-text-arm64-1.2.0
     container_name: mis-dense-nomic-text
     ports:
       - "8002:8000"
@@ -118,7 +118,7 @@ services:
 
   mis-sparse-splade-pp:
     init: true
-    image: nithish1/mis:sparse-splade-pp-1.0.0
+    image: nithish1/mis:sparse-splade-pp-arm64-1.2.0
     container_name: mis-sparse-splade-pp
     ports:
       - "8003:8000"
@@ -134,7 +134,7 @@ services:
 
   mis-reranker-jina:
     init: true
-    image: nithish1/mis:reranker-jina-1.0.0
+    image: nithish1/mis:reranker-jina-arm64-1.2.0
     container_name: mis-reranker-jina
     ports:
       - "8004:8000"
@@ -150,7 +150,7 @@ services:
 
   chunk-worker:
     init: true
-    image: nithish1/rag:fastapi-amd64-2.0.0
+    image: nithish1/rag:fastapi-arm64-3.0.2
     restart: unless-stopped
     networks:
       - rag-net
@@ -170,7 +170,7 @@ services:
         condition: service_healthy
 
     deploy:
-      replicas: 2 
+      replicas: 1
 
     volumes:
       - shared_uploads:/shared/uploads
@@ -178,7 +178,7 @@ services:
   
   embed-worker:
     init: true
-    image: nithish1/rag:fastapi-amd64-2.0.0
+    image: nithish1/rag:fastapi-arm64-3.0.2
     restart: unless-stopped
     networks:
       - rag-net
@@ -205,13 +205,16 @@ services:
         condition: service_healthy
       mis-reranker-jina:
         condition: service_healthy
+    
+    deploy:
+      replicas: 1
 
     volumes:
       - chunk_store:/data/chunks
 
   dbwrite-worker:
     init: true
-    image: nithish1/rag:fastapi-amd64-2.0.0
+    image: nithish1/rag:fastapi-arm64-3.0.2
     restart: unless-stopped
     networks:
       - rag-net
@@ -231,6 +234,10 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      
+    deploy:
+      replicas: 1
+
     volumes:
       - chunk_store:/data/chunks
 
