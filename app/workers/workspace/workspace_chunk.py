@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 from workers.job_status import update_job
 from workers.chunk_io import write_chunks_to_jsonl,safe_remove
-from workers.ingest_worker import embed_workspace_task
 
 async def run_workspace_chunk(
     job_id: str,
@@ -85,6 +84,7 @@ async def run_workspace_chunk(
         "job_id":         job_id,
     }
 
+    from workers.ingest_worker import embed_workspace_task
     embed_workspace_task.apply_async(
         kwargs={
             "job_id":       job_id,

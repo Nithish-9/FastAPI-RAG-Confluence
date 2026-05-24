@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 from workers.job_status import update_job
 from workers.chunk_io import write_chunks_to_jsonl,safe_remove
-from workers.ingest_worker import embed_enterprise_task
 
 
 async def run_enterprise_chunk(
@@ -89,6 +88,7 @@ async def run_enterprise_chunk(
 
     await update_job(job_id, status="EMBEDDING", chunks=chunk_count)
 
+    from workers.ingest_worker import embed_enterprise_task
     embed_enterprise_task.apply_async(
         kwargs={
             "job_id":      job_id,
