@@ -4,6 +4,7 @@ import logging
 import aiofiles
 import os
 import asyncio
+import uuid
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
@@ -14,10 +15,7 @@ from schemas.workspace_dto import (
     WorkspaceRetrieveResponse,
 )
 from service.generate_embedding import embed_service
-from workers.ingest_worker import ingest_workspace_task
 from service.workspace_qdrant_service import workspace_qdrant_service
-from celery.result import AsyncResult
-from workers.ingest_worker import celery_app
 from service.workspace_ingestion import decode_user_identity
 from router.utils import require_system_ready
 
@@ -71,26 +69,43 @@ async def create_index(
         )
     
     temp_path = f"/shared/uploads/{path_id}_{content_id[:12]}"
-    async with aiofiles.open(temp_path, "wb") as f:
+    async with aiofiles.open(temp_path, "wb") as f: #wb means write binary not the actual text, raw bytes
         await f.write(file_bytes)
 
+    job_id = str(uuid.uuid4())
+
+    from workers.job_status import init_job
+    await init_job(job_id, file_name)
+
     try:
-        task = ingest_workspace_task.delay(
-            file_path=temp_path, 
-            file_name=file_name,
-            file_extension=file_extension,
-            path=path,
-            path_id=path_id,
-            workspace_id=workspace_id,
-            workspace_path=workspace_path,
-            content_id=content_id,
-            raw_user_header=raw_header,
+        from workers.ingest_worker import chunk_workspace_task
+        chunk_workspace_task.apply_async(
+            kwargs=dict(
+                job_id=job_id, file_path=temp_path, file_name=file_name,
+                file_extension=file_extension, path=path, path_id=path_id,
+                workspace_id=workspace_id, workspace_path=workspace_path,
+                content_id=content_id, raw_user_header=raw_header,
+            ),
+            queue="workspace_chunk",
         )
-        return {"status": "queued", "task_id": task.id, "file_name": file_name}
+        return {"status": "queued", "job_id": job_id, "file_name": file_name}
     except Exception as e:
         logger.error(f"[WorkspaceRouter] create-index error: {repr(e)}")
         os.remove(temp_path)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/index-status/{job_id}")
+async def index_status(job_id: str):
+    """
+    Single endpoint for end-to-end job status across all 3 pipeline stages.
+    Status transitions: CHUNKING → EMBEDDING → DONE | SKIPPED | FAILED
+    """
+    from workers.job_status import get_job
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="job_id not found")
+    return job
 
 
 @router.post("/delete-index")
@@ -196,11 +211,3 @@ async def retrieve(
         logger.error(f"[WorkspaceRouter] retrieve error: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
-@router.get("/index-status/{task_id}")
-async def index_status(task_id: str):
-    result = AsyncResult(task_id, app=celery_app)
-    return {
-        "task_id": task_id,
-        "status": result.status,   # PENDING, STARTED, SUCCESS, FAILURE, RETRY
-        "result": result.result if result.ready() else None,
-    }

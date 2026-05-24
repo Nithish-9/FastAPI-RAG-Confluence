@@ -3,6 +3,7 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+import signal
 
 load_dotenv()
 from core.config_validator import validate_config
@@ -24,15 +25,19 @@ from router.workspace_router import router as workspace_router
 from router.enterprise_router import router as enterprise_router
 from service.model_services import close_http_client
 
+import redis.asyncio as aioredis
+from workers.job_status import set_redis_client
+
+REDIS_BROKER_URL = os.getenv("REDIS_BROKER_URL", "redis://localhost:6379/0")
 PORT = int(os.getenv("APP_PORT", 9000))
-UVICORN_WORKERS = int(os.getenv("UVICORN_WORKERS", 4))
+UVICORN_WORKERS = int(os.getenv("UVICORN_WORKERS", 1))
+REDIS_SOCKET_TIMEOUT = int(os.getenv("REDIS_SOCKET_TIMEOUT",5))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,6 +62,7 @@ async def lifespan(app: FastAPI):
     enterprise_qdrant_service.close()
     workspace_qdrant_service.close()
     await close_http_client()
+    await _shutdown_redis()
     logger.info("--- [SYSTEM] Shutdown complete ---")
 
 
@@ -69,8 +75,34 @@ async def health():
 app.include_router(workspace_router)
 app.include_router(enterprise_router)
 
+
+_redis_client: aioredis.Redis | None = None
+
+
+async def _shutdown_redis():
+    global _redis_client
+    if _redis_client is not None:
+        await _redis_client.aclose()
+        _redis_client = None
+
+
+async def _init_redis() -> bool:
+    global _redis_client
+    try:
+        client = aioredis.Redis.from_url(REDIS_BROKER_URL, socket_timeout=REDIS_SOCKET_TIMEOUT)
+        await client.set("__health__", "1", ex=10)
+        _redis_client = client
+        set_redis_client(client)
+        logger.info("--- [SYSTEM] Redis client initialized ---")
+        return True
+    except Exception as e:
+        logger.error(f"[SYSTEM] Redis connection failed: {repr(e)}")
+        return False
+
+
 async def initialize_all_components():
     results = await asyncio.gather(
+        _init_redis(),                                        
         enterprise_qdrant_service.init_collection(),
         workspace_qdrant_service.init_collection(),
         embed_service.check_dense_connectivity("text"),
@@ -80,19 +112,25 @@ async def initialize_all_components():
         return_exceptions=True,
     )
 
-    is_enterprise_qdrant = results[0] if not isinstance(results[0], Exception) else False
-    is_workspace_qdrant  = results[1] if not isinstance(results[1], Exception) else False
-    is_text_dense        = results[2] if not isinstance(results[2], Exception) else False
-    is_code_dense        = results[3] if not isinstance(results[3], Exception) else False  
-    is_text_sparse       = results[4] if not isinstance(results[4], Exception) else False  
-    is_rerank            = results[5] if not isinstance(results[5], Exception) else False  
+    is_redis             = results[0] if not isinstance(results[0], Exception) else False
+    is_enterprise_qdrant = results[1] if not isinstance(results[1], Exception) else False
+    is_workspace_qdrant  = results[2] if not isinstance(results[2], Exception) else False
+    is_text_dense        = results[3] if not isinstance(results[3], Exception) else False
+    is_code_dense        = results[4] if not isinstance(results[4], Exception) else False
+    is_text_sparse       = results[5] if not isinstance(results[5], Exception) else False
+    is_rerank            = results[6] if not isinstance(results[6], Exception) else False
 
     system_state.set_enterprise_collection_state(is_enterprise_qdrant)
-    system_state.set_workspace_collection_state(is_workspace_qdrant)   
+    system_state.set_workspace_collection_state(is_workspace_qdrant)
     system_state.set_text_dense_model_state(is_text_dense)
     system_state.set_code_dense_model_state(is_code_dense)
     system_state.set_text_sparse_model_state(is_text_sparse)
     system_state.set_reranker_model_state(is_rerank)
+
+    if not is_redis:
+        logger.error("--- [SYSTEM] FATAL: Redis unavailable, shutting down ---")
+        os.kill(os.getpid(), signal.SIGTERM)
+        return
 
     if not all([is_enterprise_qdrant, is_workspace_qdrant, is_text_dense,
                 is_code_dense, is_text_sparse, is_rerank]):

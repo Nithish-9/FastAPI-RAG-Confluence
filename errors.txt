@@ -1,0 +1,40 @@
+nithish.s@0325LTPB0124281 ~ % docker exec -it distributed-indexer-chunk-worker-1 /bin/sh
+# ls
+__pycache__  core  main.py  preload_treesitter.py  qdrant_config.yml  requirements.txt	router	schemas  service  temp_uploads	tests  workers
+# 
+
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/app/workers/ingest_worker.py", line 107, in chunk_workspace_task
+    raise self.retry(exc=exc, countdown=_backoff(self))
+          ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/celery/app/task.py", line 769, in retry
+    raise_with_context(exc)
+    ~~~~~~~~~~~~~~~~~~^^^^^
+  File "/app/workers/ingest_worker.py", line 88, in chunk_workspace_task
+    return asyncio.run(
+           ~~~~~~~~~~~^
+        run_workspace_chunk(
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+        )
+        ^
+    )
+    ^
+  File "/usr/local/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/local/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/local/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/app/workers/workspace/workspace_chunk.py", line 26, in run_workspace_chunk
+    from service.workspace_ingestion import decode_user_identity
+ModuleNotFoundError: No module named 'service'

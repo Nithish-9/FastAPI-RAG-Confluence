@@ -22,5 +22,5 @@ pipreqs . --force --ignore .venv --encoding utf-8
 taskkill /F /IM python.exe /T
 
 docker buildx build --platform linux/amd64 -t nithish1/rag:fastapi-amd64-2.3.0 --push .
-docker buildx build --platform linux/arm64 -t nithish1/rag:fastapi-arm64-2.3.0 --push .
+docker buildx build --platform linux/arm64 -t nithish1/rag:fastapi-arm64-3.0.0 --push .
 docker buildx imagetools create -t nithish1/rag:fastapi-2.3.0 nithish1/rag:fastapi-amd64-2.3.0 nithish1/rag:fastapi-arm64-2.3.0
