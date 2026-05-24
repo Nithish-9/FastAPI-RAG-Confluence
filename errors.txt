@@ -1,88 +1,35 @@
 Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:23,088 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:23,093 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:24,288 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:24,290 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:25,658 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:25,659 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:27,400 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:27,402 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:29,943 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:29,947 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
-Confluence credentials missing; ingest might fail.
-2026-05-24 10:19:34,075 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-2026-05-24 10:19:34,076 [INFO] httpx: HTTP Request: GET http://qdrant:6333 "HTTP/1.1 200 OK"
-Traceback (most recent call last):
-  File "/app/main.py", line 25, in <module>
-    from router.enterprise_router import router as enterprise_router
-  File "/app/router/enterprise_router.py", line 14, in <module>
-    from workers.ingest_worker import ingest_confluence_task
-  File "/app/workers/ingest_worker.py", line 17, in <module>
-    from workers.workspace.workspace_chunk import run_workspace_chunk
-  File "/app/workers/workspace/workspace_chunk.py", line 13, in <module>
-    from workers.ingest_worker import embed_workspace_task
-ImportError: cannot import name 'embed_workspace_task' from partially initialized module 'workers.ingest_worker' (most likely due to a circular import) (/app/workers/ingest_worker.py)
+  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
+    R = retval = fun(*args, **kwargs)
+                 ~~~^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 858, in __protected_call__
+    return self.run(*args, **kwargs)
+           ~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/app/workers/ingest_worker.py", line 107, in chunk_workspace_task
+    raise self.retry(exc=exc, countdown=_backoff(self))
+          ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/celery/app/task.py", line 769, in retry
+    raise_with_context(exc)
+    ~~~~~~~~~~~~~~~~~~^^^^^
+  File "/app/workers/ingest_worker.py", line 88, in chunk_workspace_task
+    return asyncio.run(
+           ~~~~~~~~~~~^
+        run_workspace_chunk(
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<10 lines>...
+        )
+        ^
+    )
+    ^
+  File "/usr/local/lib/python3.13/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/local/lib/python3.13/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/local/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/app/workers/workspace/workspace_chunk.py", line 26, in run_workspace_chunk
+    from service.workspace_ingestion import decode_user_identity
+ModuleNotFoundError: No module named 'service'
