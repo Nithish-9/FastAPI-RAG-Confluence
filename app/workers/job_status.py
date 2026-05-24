@@ -57,6 +57,8 @@ async def init_job(job_id: str, file_name: str, total_files: int = 1) -> None:
         "backpressure_hits": 0,
         "upserted": 0,
         "dbwrite_duration_ms": 0,
+        "expected_batches":  0,   
+        "completed_batches": 0, 
         "created_at": time.time(),
         "updated_at": time.time(),
     }
@@ -101,3 +103,47 @@ async def get_job(job_id: str) -> dict | None:
 
 async def fail_job(job_id: str, error: str) -> None:
     await update_job(job_id, status="FAILED", error=error)
+
+
+async def increment_upserted(job_id: str, count: int) -> None:
+    client = _get_redis()
+    try:
+        key = _key(job_id)
+        for attempt in range(10):
+            async with client.pipeline() as pipe:
+                try:
+                    await pipe.watch(key)
+                    raw = await pipe.get(key)
+                    if not raw:
+                        return
+
+                    payload = json.loads(raw)
+                    payload["upserted"] = payload.get("upserted", 0) + count
+                    payload["completed_batches"] = payload.get("completed_batches", 0) + 1
+                    payload["updated_at"] = time.time()
+
+                    expected = payload.get("expected_batches", 1)
+                    completed = payload["completed_batches"]
+                    if completed >= expected and expected > 0:
+                        payload["status"] = "DONE"
+
+                    pipe.multi()
+                    await pipe.setex(key, REDIS_CACHE_TTL, json.dumps(payload))
+                    await pipe.execute()  
+                    return              
+
+                except aioredis.WatchError:
+                    logger.debug(
+                        f"[JobStatus] increment_upserted watch conflict "
+                        f"job={job_id} attempt={attempt + 1}, retrying"
+                    )
+                    continue           
+
+        logger.warning(
+            f"[JobStatus] increment_upserted failed after 10 attempts job={job_id}"
+        )
+    except Exception as e:
+        logger.warning(f"[JobStatus] increment_upserted failed for {job_id}: {e}")
+    finally:
+        if _fastapi_client is None:
+            await client.aclose()

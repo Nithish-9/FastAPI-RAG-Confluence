@@ -149,7 +149,7 @@ async def run_enterprise_embed(
             asyncio.create_task(consumer(i)) for i in range(effective_concurrency)
         ]
         await asyncio.gather(producer(), *consumers)
-    except Exception as e:
+    except Exception:
         for task in consumers:
             task.cancel()
         await asyncio.gather(*consumers, return_exceptions=True)
@@ -172,12 +172,13 @@ async def run_enterprise_embed(
 
     await update_job(
         job_id,
-        status="DONE",
+        status="WRITING",
         chunks_embedded=total_chunks,
         batches_done=total_batches,
         embed_duration_ms=round(embed_duration_ms, 2),
         chunks_per_second_embed=chunks_per_second_embed,
         backpressure_hits=backpressure_hits,
+        expected_batches=total_batches,
     )
 
     return {"total_chunks": total_chunks, "total_batches": total_batches}
