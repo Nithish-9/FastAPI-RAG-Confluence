@@ -11,7 +11,6 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from schemas.enterprise_dto import DeleteIndexRequest, EnterpriseRetrieveRequest
 from service.generate_embedding import embed_service
 from service.enterprise_qdrant_service import enterprise_qdrant_service
-from workers.ingest_worker import ingest_confluence_task
 from router.utils import require_system_ready
 
 logging.basicConfig(
@@ -79,22 +78,6 @@ async def index_status(job_id: str):
     return job
 
 
-@router.post("/webhook/confluence")
-async def confluence_webhook(request: Request):
-    """
-    Receives a Confluence webhook payload and queues ingestion on the
-    'enterprise_ingestion' Celery queue.
-    """
-    data = await request.json()
-
-    page_id = str(data.get("page", {}).get("id", ""))
-    if not page_id or page_id == "None":
-        raise HTTPException(status_code=400, detail="Missing or invalid page.id in webhook payload")
-
-    task = ingest_confluence_task.delay(page_id=page_id)
-    return {"status": "queued", "task_id": task.id, "page_id": page_id}
-
-
 
 @router.post("/delete-index")
 async def delete_index(request: DeleteIndexRequest):
@@ -145,3 +128,20 @@ async def retrieve(request: EnterpriseRetrieveRequest):
         logger.error(f"[EnterpriseRouter] retrieve error: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+'''
+@router.post("/webhook/confluence")
+async def confluence_webhook(request: Request):
+    """
+    Receives a Confluence webhook payload and queues ingestion on the
+    'enterprise_ingestion' Celery queue.
+    """
+    data = await request.json()
+
+    page_id = str(data.get("page", {}).get("id", ""))
+    if not page_id or page_id == "None":
+        raise HTTPException(status_code=400, detail="Missing or invalid page.id in webhook payload")
+
+    task = ingest_confluence_task.delay(page_id=page_id)
+    return {"status": "queued", "task_id": task.id, "page_id": page_id}
+'''
