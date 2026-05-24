@@ -38,16 +38,27 @@ def _key(job_id: str) -> str:
 
 async def init_job(job_id: str, file_name: str, total_files: int = 1) -> None:
     payload = {
-        "job_id":       job_id,
-        "file_name":    file_name,
-        "status":       "CHUNKING",
-        "total_files":  total_files,
-        "chunks":       0,
+        "job_id": job_id,
+        "file_name": file_name,
+        "total_files": total_files,
+        "status": "CHUNKING",
+        "error": None,
+        "chunks": 0,
+        "file_size_bytes": 0,
+        "avg_chunk_size": 0,
+        "min_chunk_size": 0,
+        "max_chunk_size": 0,
+        "chunk_duration_ms": 0,
+        "chunks_per_second": 0.0,
         "batches_done": 0,
-        "upserted":     0,
-        "error":        None,
-        "created_at":   time.time(),
-        "updated_at":   time.time(),
+        "chunks_embedded": 0,
+        "embed_duration_ms": 0,
+        "chunks_per_second_embed": 0.0,
+        "backpressure_hits": 0,
+        "upserted": 0,
+        "dbwrite_duration_ms": 0,
+        "created_at": time.time(),
+        "updated_at": time.time(),
     }
     client = _get_redis()
     try:
