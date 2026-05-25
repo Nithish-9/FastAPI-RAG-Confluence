@@ -228,7 +228,7 @@ class EnterpriseQdrantService:
             return
         must: List[models.Condition] = [
             models.FieldCondition(
-                key="path_id",
+                key="page_id",
                 match=models.MatchAny(any=page_ids),
             ),
         ]
