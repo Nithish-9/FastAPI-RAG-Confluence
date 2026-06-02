@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 import redis
 
@@ -76,8 +77,11 @@ async def run_workspace_embed(
     batch_queue: asyncio.Queue = asyncio.Queue(maxsize=READ_AHEAD_LIMIT)
 
     total_batches_dispatched = 0
-    total_chunks_processed   = 0
+    total_chunks_processed = 0
+    backpressure_hits = 0
     lock = asyncio.Lock()
+
+    t0 = time.perf_counter()
 
     async def producer() -> None:
         batch: list[dict] = []
@@ -93,7 +97,7 @@ async def run_workspace_embed(
             await batch_queue.put(_DONE)
 
     async def consumer(consumer_id: int) -> None:
-        nonlocal total_batches_dispatched, total_chunks_processed
+        nonlocal total_batches_dispatched, total_chunks_processed, backpressure_hits
 
         while True:
             batch = await batch_queue.get()
@@ -110,6 +114,8 @@ async def run_workspace_embed(
 
                 depth = await asyncio.to_thread(_dbwrite_queue_depth)
                 while depth >= DBWRITE_QUEUE_MAX:
+                    async with lock:
+                        backpressure_hits += 1
                     logger.warning(
                         f"[StreamingEmbed] job={job_id} consumer={consumer_id} "
                         f"dbwrite queue saturated (>{DBWRITE_QUEUE_MAX}), "
@@ -119,24 +125,17 @@ async def run_workspace_embed(
                     depth = await asyncio.to_thread(_dbwrite_queue_depth)
 
                 async with lock:
-                    batch_idx = total_batches_dispatched
+                    batch_idx                 = total_batches_dispatched
                     total_batches_dispatched += 1
                     total_chunks_processed   += len(batch)
 
                 emb_path = await asyncio.to_thread(
                     write_embedded_batch,
-                    job_id,
-                    batch_idx,
-                    batch,
-                    dense_vecs,
-                    sparse_vecs,
+                    job_id, batch_idx, batch, dense_vecs, sparse_vecs,
                 )
 
                 dbwrite_workspace_task.apply_async(
-                    kwargs={
-                        "emb_jsonl_path": emb_path,
-                        "upsert_meta":    upsert_meta,
-                    },
+                    kwargs={"emb_jsonl_path": emb_path, "upsert_meta": upsert_meta},
                     queue="workspace_dbwrite",
                 )
 
@@ -161,19 +160,38 @@ async def run_workspace_embed(
             asyncio.create_task(consumer(i)) for i in range(effective_concurrency)
         ]
         await asyncio.gather(producer(), *consumers)
-    except Exception as e:
+    except Exception:
         for task in consumers:
             task.cancel()
         await asyncio.gather(*consumers, return_exceptions=True)
         safe_remove(jsonl_path)
         raise
 
+    embed_duration_ms = (time.perf_counter() - t0) * 1000
+    chunks_per_second_embed = round(
+        total_chunks_processed / (embed_duration_ms / 1000), 2
+    ) if embed_duration_ms > 0 else 0.0
+
     safe_remove(jsonl_path)
 
     logger.info(
         f"[StreamingEmbed] job={job_id} complete — "
-        f"{total_chunks_processed} chunks in {total_batches_dispatched} batches"
+        f"{total_chunks_processed} chunks in {total_batches_dispatched} batches | "
+        f"{chunks_per_second_embed} chunks/s | {embed_duration_ms:.0f}ms | "
+        f"backpressure_hits={backpressure_hits}"
     )
+
+    await update_job(
+        job_id,
+        status="WRITING",
+        chunks_embedded=total_chunks_processed,
+        batches_done=total_batches_dispatched,
+        embed_duration_ms=round(embed_duration_ms, 2),
+        chunks_per_second_embed=chunks_per_second_embed,
+        backpressure_hits=backpressure_hits,
+        expected_batches=total_batches_dispatched,
+    )
+
     return {
         "total_chunks":  total_chunks_processed,
         "total_batches": total_batches_dispatched,

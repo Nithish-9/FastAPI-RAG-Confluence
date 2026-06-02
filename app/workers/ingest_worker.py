@@ -18,7 +18,7 @@ from workers.workspace.workspace_chunk import run_workspace_chunk
 from workers.workspace.workspace_embed import run_workspace_embed
 from workers.enterprise.enterprise_chunk import run_enterprise_chunk
 from workers.enterprise.enterprise_embed import run_enterprise_embed
-from workers.job_status import update_job, fail_job
+from workers.job_status import update_job, fail_job,increment_upserted
 
 REDIS_BROKER_URL  = os.getenv("REDIS_BROKER_URL",  "redis://localhost:6379/0")
 REDIS_BACKEND_URL = os.getenv("REDIS_BACKEND_URL", "redis://localhost:6379/1")
@@ -145,16 +145,15 @@ def embed_workspace_task(
     name="workers.ingest_worker.dbwrite_workspace_task",
 )
 def dbwrite_workspace_task(self, emb_jsonl_path: str, upsert_meta: dict) -> dict:
+    job_id = upsert_meta.get("job_id", "")
     try:
         from service.workspace_qdrant_service import workspace_qdrant_service
         result = workspace_qdrant_service.upsert_from_emb_file(emb_jsonl_path, upsert_meta)
-        job_id = upsert_meta.get("job_id", "")
         if job_id:
-            asyncio.run(update_job(job_id, status="DONE", upserted=result.get("upserted", 0)))
+            asyncio.run(increment_upserted(job_id, result.get("upserted", 0)))
         return result
     except self.MaxRetriesExceededError:
         safe_remove(emb_jsonl_path)
-        job_id = upsert_meta.get("job_id", "")
         if job_id:
             asyncio.run(fail_job(job_id, "Max retries exceeded in dbwrite stage"))
         raise
@@ -242,7 +241,7 @@ def dbwrite_enterprise_task(
             page_id=page_id,
         )
         if job_id:
-            asyncio.run(update_job(job_id, status="DONE", upserted=result.get("upserted", 0)))
+            asyncio.run(increment_upserted(job_id, result.get("upserted", 0)))
         return result
     except self.MaxRetriesExceededError:
         safe_remove(emb_jsonl_path)

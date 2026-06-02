@@ -38,16 +38,29 @@ def _key(job_id: str) -> str:
 
 async def init_job(job_id: str, file_name: str, total_files: int = 1) -> None:
     payload = {
-        "job_id":       job_id,
-        "file_name":    file_name,
-        "status":       "CHUNKING",
-        "total_files":  total_files,
-        "chunks":       0,
+        "job_id": job_id,
+        "file_name": file_name,
+        "total_files": total_files,
+        "status": "CHUNKING",
+        "error": None,
+        "chunks": 0,
+        "file_size_bytes": 0,
+        "avg_chunk_size": 0,
+        "min_chunk_size": 0,
+        "max_chunk_size": 0,
+        "chunk_duration_ms": 0,
+        "chunks_per_second": 0.0,
         "batches_done": 0,
-        "upserted":     0,
-        "error":        None,
-        "created_at":   time.time(),
-        "updated_at":   time.time(),
+        "chunks_embedded": 0,
+        "embed_duration_ms": 0,
+        "chunks_per_second_embed": 0.0,
+        "backpressure_hits": 0,
+        "upserted": 0,
+        "dbwrite_duration_ms": 0,
+        "expected_batches":  0,   
+        "completed_batches": 0, 
+        "created_at": time.time(),
+        "updated_at": time.time(),
     }
     client = _get_redis()
     try:
@@ -90,3 +103,47 @@ async def get_job(job_id: str) -> dict | None:
 
 async def fail_job(job_id: str, error: str) -> None:
     await update_job(job_id, status="FAILED", error=error)
+
+
+async def increment_upserted(job_id: str, count: int) -> None:
+    client = _get_redis()
+    try:
+        key = _key(job_id)
+        for attempt in range(10):
+            async with client.pipeline() as pipe:
+                try:
+                    await pipe.watch(key)
+                    raw = await pipe.get(key)
+                    if not raw:
+                        return
+
+                    payload = json.loads(raw)
+                    payload["upserted"] = payload.get("upserted", 0) + count
+                    payload["completed_batches"] = payload.get("completed_batches", 0) + 1
+                    payload["updated_at"] = time.time()
+
+                    expected = payload.get("expected_batches", 1)
+                    completed = payload["completed_batches"]
+                    if completed >= expected and expected > 0:
+                        payload["status"] = "DONE"
+
+                    pipe.multi()
+                    await pipe.setex(key, REDIS_CACHE_TTL, json.dumps(payload))
+                    await pipe.execute()  
+                    return              
+
+                except aioredis.WatchError:
+                    logger.debug(
+                        f"[JobStatus] increment_upserted watch conflict "
+                        f"job={job_id} attempt={attempt + 1}, retrying"
+                    )
+                    continue           
+
+        logger.warning(
+            f"[JobStatus] increment_upserted failed after 10 attempts job={job_id}"
+        )
+    except Exception as e:
+        logger.warning(f"[JobStatus] increment_upserted failed for {job_id}: {e}")
+    finally:
+        if _fastapi_client is None:
+            await client.aclose()

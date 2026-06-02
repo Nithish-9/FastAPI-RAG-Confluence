@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import aiofiles
 
 logging.basicConfig(
@@ -47,12 +48,15 @@ async def run_workspace_chunk(
     async with aiofiles.open(file_path, "rb") as f:
         file_content = await f.read()
 
+    file_size_bytes = len(file_content)
     safe_remove(file_path)
 
+    t0 = time.perf_counter()
     chunks = await asyncio.to_thread(
         code_parser.parse_file,
         file_content, file_name, file_extension, path, workspace_path,
     )
+    chunk_duration_ms = (time.perf_counter() - t0) * 1000
     del file_content
 
     if not chunks:
@@ -60,9 +64,17 @@ async def run_workspace_chunk(
         return {"skipped": True, "reason": "no chunks produced"}
 
     sizes = [len(c.content) for c in chunks]
+    chunk_count = len(chunks)
+    avg_chunk_size = int(sum(sizes) / chunk_count)
+    min_chunk_size = min(sizes)
+    max_chunk_size = max(sizes)
+    chunks_per_second = round(chunk_count / (chunk_duration_ms / 1000), 2) \
+                        if chunk_duration_ms > 0 else 0.0
+
     logger.info(
-        f"[ChunkWorker] {file_name}: {len(chunks)} chunks | "
-        f"min={min(sizes)} max={max(sizes)} avg={sum(sizes)/len(sizes):.0f}"
+        f"[ChunkWorker] {file_name}: {chunk_count} chunks | "
+        f"min={min_chunk_size} max={max_chunk_size} avg={avg_chunk_size} | "
+        f"{chunks_per_second} chunks/s | {chunk_duration_ms:.0f}ms"
     )
 
     jsonl_path, chunk_count = await asyncio.to_thread(
@@ -70,28 +82,38 @@ async def run_workspace_chunk(
     )
     del chunks
 
-    await update_job(job_id, status="EMBEDDING", chunks=chunk_count)
+    await update_job(
+        job_id,
+        status="EMBEDDING",
+        chunks=chunk_count,
+        file_size_bytes=file_size_bytes,
+        avg_chunk_size=avg_chunk_size,
+        min_chunk_size=min_chunk_size,
+        max_chunk_size=max_chunk_size,
+        chunk_duration_ms=round(chunk_duration_ms, 2),
+        chunks_per_second=chunks_per_second,
+    )
 
     upsert_meta = {
-        "user_id":        user_id,
-        "email_id":       email_id,
-        "content_id":     content_id,
-        "workspace_id":   workspace_id,
-        "path_id":        path_id,
-        "path":           path,
-        "file_name":      file_name,
+        "user_id": user_id,
+        "email_id": email_id,
+        "content_id": content_id,
+        "workspace_id": workspace_id,
+        "path_id": path_id,
+        "path": path,
+        "file_name": file_name,
         "file_extension": file_extension,
-        "job_id":         job_id,
+        "job_id": job_id,
     }
 
     from workers.ingest_worker import embed_workspace_task
     embed_workspace_task.apply_async(
         kwargs={
-            "job_id":       job_id,
-            "jsonl_path":   jsonl_path,
-            "dense_type":   "code",
-            "sparse_type":  "text",
-            "upsert_meta":  upsert_meta,
+            "job_id": job_id,
+            "jsonl_path": jsonl_path,
+            "dense_type": "code",
+            "sparse_type": "text",
+            "upsert_meta": upsert_meta,
         },
         queue="workspace_embed",
     )
