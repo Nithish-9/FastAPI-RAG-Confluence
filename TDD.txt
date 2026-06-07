@@ -1,0 +1,963 @@
+IDFC Nexus: Unified Intelligence Core for Distributed Knowledge Orchestration
+
+
+
+By Nithish S
+
+23 min
+
+2
+
+Add a reaction
+Project Overview: 
+IDFC Nexus is a high-performance, distributed intelligence platform engineered to transform massive, fragmented enterprise data—ranging from complex polyglot codebases to organizational documentation—into an actionable, AI-driven knowledge graph.
+
+At its core, Nexus is not a simple chatbot, but a Distributed Multi-Agent Orchestrator. It solves the primary challenges of enterprise AI: latency, context precision, and resource constraints. The platform implements a "Knowledge-to-Action" pipeline where data is surgically extracted using AST (Abstract Syntax Tree) parsing, indexed via a hybrid semantic-keyword retrieval engine, and navigated by a fleet of specialized AI agents capable of both information retrieval and direct system execution.
+
+The Nexus ecosystem is engineered upon four architectural pillars:
+
+Deep Semantic Ingestion: Unlike standard text splitters, Nexus utilizes Tree-Sitter AST parsing to maintain the logical skeleton of code, ensuring that functions and classes retain their structural context across the vector space.
+
+Hardware-Optimized Inference: By employing a "Bake-at-Build" strategy with ONNX Runtime, Nexus offloads heavy tensor computations to the Apple Neural Engine (via CoreML), achieving high token-per-second throughput while preventing thermal throttling.
+
+Precision Hybrid Retrieval: The system implements a Multi-Stage Fusion Pipeline, combining Dense (Semantic) and Sparse (SPLADE) vectors via Reciprocal Rank Fusion (RRF) and a final Cross-Encoder Reranking stage to ensure near-perfect retrieval accuracy.
+
+State-Driven Orchestration: The intelligence layer, written in Go, utilizes a Daemon-TUI model and a Dynamic Execution Chain. This allows a strategic "Initial Agent" to route queries across a network of specialist agents (Enterprise, Workspace, System, and MCP), enabling the system to perform complex, multi-step operations like codebase refactoring or data manipulation.
+
+1. System Architecture & Infrastructure 
+1.1 High-Level System Architecture
+IDFC Nexus is built upon a Distributed Asynchronous Architecture, specifically engineered to decouple heavy computational workloads from the user experience. The primary design objective is to eliminate "blocking" operations; by transforming high-latency AI inference and massive-scale codebase indexing into a background stream, the system maintains a responsive, real-time interface regardless of the data volume.
+
+The architecture functions as a distributed pipeline, where the Go-based orchestrator manages the state, and a fleet of specialized Python-based microservices handles the heavy lifting of AST parsing, vectorization, and inference.
+
+The Global Execution Flow:
+
+Knowledge Ingestion (The Write Path):
+Go CLI → Indexer API → Redis (Broker) → Celery Worker Tier (Chunk → Embed → Write) → MIS (Inference) → Qdrant (Vector Store).
+
+Intelligence Retrieval (The Read Path):
+Go CLI → Indexer API → Qdrant (Hybrid Dense & Sparse Search) → MIS (Cross-Encoder Reranking) → Agent Orchestrator → Final Synthesis.
+
+1.2 Infrastructure Specification
+1.2.1 Hardware Allocation & Optimization
+The system is tuned for the Apple Silicon M4 Pro architecture to maximize throughput while avoiding thermal throttling.
+
+Resource Constraints: 14GB RAM allocated to Docker, with a 3GB Swap buffer to handle peak memory spikes during AST parsing of exceptionally large files.
+
+Critical Note: Swap is essential not only for AST parsing but also for Tension/Tensor allocation during large batch inference and OS-level file caching during the streaming of massive .jsonl files.
+
+CPU Management: All 12 cores are accessible, but CPU saturation is prevented via application-level Semaphores and Batching within the workers and MIS.
+
+Execution Provider: Utilizes CoreMLExecutionProvider via the ONNX runtime to offload inference to the Apple Neural Engine, significantly reducing heat and increasing token-per-second throughput.
+
+1.2.2 Volume & Memory Strategy
+To prevent Redis Memory exhaustion (OOM) when indexing large repositories, the system implements a Shared Volume Strategy instead of passing file bytes through the message broker.
+
+Volume Name
+
+Path in Container
+
+Cleanup Policy
+
+Purpose
+
+Volume Name
+
+Path in Container
+
+Cleanup Policy
+
+Purpose
+
+shared_uploads 
+
+/shared/uploads 
+
+Strict: Deleted by worker upon completion or failure. 
+
+Temporary storage for raw uploads. 
+
+chunk_store 
+
+/data/chunks 
+
+Strict: Deleted after DB upsert. 
+
+Storage for .jsonl and .emb.jsonl files. 
+
+redis_data 
+
+/data 
+
+Persistent (AOF) 
+
+Broker state and task result persistence. 
+
+qdrant_data 
+
+/qdrant/storage 
+
+Persistent 
+
+Vector indexes and payload storage. 
+
+1.3 Component Interaction & Readiness
+1.3.1 The System Readiness Gate (Startup)
+The Indexer implements a "Fail-Fast" mechanism. Upon startup, the system executes asyncio.gather() to concurrently verify the health of all dependencies. The API remains in a 503 Service Unavailable state until all components (Redis, Qdrant, and all 4 MIS containers) respond positively to health checks.
+1.3.2 Runtime Fault Tolerance
+Unlike the startup gate, the system does not trigger a global 503 if a component fails after the system has started. Instead, it adopts a Degraded Mode strategy:
+
+Inference Failures: If a specific MIS container (e.g., the Reranker) becomes unavailable, the retrieval pipeline catches the exception and falls back to the RRF (Reciprocal Rank Fusion) results.
+
+Task Failures: If a Celery worker fails a task, the state is updated in Redis. The Go CLI, which polls the task status, detects the failure and notifies the user.
+
+1.3.3 The "Why" Behind the Stack
+Why Qdrant?
+Qdrant was selected as the primary vector engine because it moves beyond simple similarity search to provide a production-grade database for high-dimensional data.
+
+Native Hybrid Support: Unlike most vector DBs, Qdrant natively supports Named Vectors. This allows the system to store both Dense (semantic) and Sparse (keyword) embeddings within a single point, eliminating the need to manage two separate databases and perform manual joins.
+
+HNSW Graph Indexing: It utilizes Hierarchical Navigable Small World (HNSW) graphs, providing an optimal trade-off between search speed and accuracy. This ensures that retrieval remains O(log⁡N) even as the codebase grows to millions of chunks.
+
+Integrated BM25 Alternative: By leveraging Sparse Vectors (SPLADE), Qdrant handles keyword-based retrieval natively. This removes the architectural overhead of implementing and maintaining a separate BM25/Lucene index for traditional keyword search.
+
+Advanced Memory Management: Qdrant offers a highly flexible In-Memory vs. On-Disk strategy. It can keep the HNSW index in RAM for lightning-fast traversal while offloading the actual vector payloads to disk (Mmap), effectively acting as a massive, intelligent cache that prevents OOM (Out of Memory) crashes.
+
+Multi-Tenant Isolation: Its Payload Indexing capability is critical for 3-level isolation model (user_id → workspace_id → path_id), allowing the system to perform surgical filtered searches at the database level rather than filtering results in application code.
+
+Why Redis?
+Redis is the central nervous system of the IDFC Nexus architecture, serving far more than just a simple data store.
+
+Ultra-Low Latency Broker: By operating entirely in-memory, Redis provides sub-millisecond latency for task queueing. This ensures that the transition between the Chunk Worker, Embed Worker, and DB Write Worker is nearly instantaneous.
+
+Distributed State Machine: Redis acts as the Single Source of Truth (SSoT) for job tracking. Through atomic counters and state flags, it tracks the lifecycle of an indexing job (CHUNKING → EMBEDDING → WRITING) across multiple distributed workers.
+
+Optimistic Locking (Concurrency Control): Using the WATCH/MULTI/EXEC pattern, Redis allows the system to implement Optimistic Locking. This prevents race conditions when multiple workers attempt to update the upserted_count of a single job simultaneously.
+
+Backpressure Regulation: By monitoring queue depths via LLEN, Redis enables the system to implement backpressure. When the DB Write queue exceeds a threshold, the Embed Worker is signaled to throttle production, preventing a system-wide crash during massive ingestion spikes.
+
+Persistence via AOF: While primarily in-memory for speed, the use of Append-Only Files (AOF) ensures that the state of long-running indexing jobs is not lost in the event of a container restart.
+
+1.3.3 Interaction Matrix
+Source
+
+Destination
+
+Protocol
+
+Purpose
+
+Go CLI 
+
+Indexer API 
+
+REST / Multipart 
+
+File ingestion / Query retrieval 
+
+Indexer API 
+
+Redis 
+
+TCP/RESP 
+
+Queueing background tasks 
+
+Workers 
+
+Redis 
+
+TCP/RESP 
+
+Task polling and state updates 
+
+Embed Worker 
+
+MIS Fleet 
+
+REST / JSON 
+
+Vector generation 
+
+DB Worker 
+
+Qdrant 
+
+gRPC / HTTP 
+
+Bulk point upserts 
+
+Indexer API 
+
+Qdrant 
+
+gRPC / HTTP 
+
+Hybrid search queries 
+
+2. The Distributed Indexing Pipeline
+This section provides the exhaustive technical specification of the ingestion engine. The system is designed as a multi-stage asynchronous stream, specifically engineered to handle massive codebases on limited hardware by keeping memory usage O(1) relative to file size.
+
+2.1 The Distributed Pipeline Architecture
+The ingestion process is decoupled into three specialized Celery worker tiers. This allows for independent scaling: if embedding is the bottleneck, more embed-workers can be deployed without increasing the number of chunk-workers.
+
+The Sequence of Flow:
+CLI Upload → FastAPI → Redis Queue → Chunk Worker → Embed Worker → DB Write Worker → Qdrant
+
+Pipeline Execution Sequence
+
+
+2.2 Component Technical Specifications
+2.2.1 The Chunk Worker (Advanced AST Parsing))
+The Chunk Worker is the first line of processing. Its primary goal is to reduce redundant work and structure the data.
+
+Deduplication Logic: The worker performs a Qdrant scroll lookup using user_id, workspace_id, path_id, and content_id. 
+
+Match Found: The file is skipped, and the job_status is updated to SKIPPED in Redis. The temporary raw file is immediately deleted via safe_remove.
+
+No Match/Change: The file is processed. Note: If content_id is the same but path_id differs (file moved), it is treated as a new file.
+
+Tree-Sitter AST Parsing:
+
+Targeted Extraction: Uses LANGUAGE_NODE_TYPES to identify logical blocks (e.g., function_definition in Python, method_declaration in Java).
+
+The Skeleton Pattern: If a node contains semantic children, the worker extracts the "Skeleton" (the class signature, constants, and decorators) and then recurses into the children. This ensures that a function chunk retains the context of the class it belongs to.
+
+Preamble Propagation: When a child chunk is created, a _PREAMBLE_CHARS (200 chars) snippet of the parent node is prepended to it.
+
+Regex Fallback: For languages without full AST support (Apex, Swift), it uses high-precision regex patterns to find boundaries.
+
+Fallback Splitter: If all else fails, it uses RecursiveCharacterTextSplitter.
+
+Output: Chunks are written to .jsonl to ensure memory-safe streaming in the next stage.
+
+Metadata Enrichment: For every chunk, the worker extracts:
+
+symbol: The function/class name.
+
+language: Detected programming language.
+
+start_line/end_line: Exact location in the source file.
+
+Memory-Safe Persistence (write_chunks_to_jsonl): Chunks are written to a .jsonl file. By using JSONL, the system avoids loading a giant Python list into memory, allowing the subsequent stage to read the file as a generator.
+
+2.2.2 The Embed Worker (Streaming & Backpressure)
+The Embed Worker manages the transition from text to vectors. It is the most resource-intensive stage and implements a Producer-Consumer pattern via asyncio.Queue.
+
+A. The Producer-Consumer Loop
+
+Producer: Uses stream_chunks_from_jsonl to yield records one-by-one. It groups these into batches defined by EMBED_BATCH_SIZE (default: 8) and puts them into the batch_queue.
+
+Queue Limitation: The batch_queue has a maxsize=READ_AHEAD_LIMIT (default: 4). This prevents the producer from reading the entire file into RAM if the inference service is slow.
+
+Consumer Pool: A number of concurrent workers (effective_concurrency) pull batches and call the MIS for combined Dense and Sparse embeddings.
+
+B. Intermediate Persistence (write_embedded_batch)
+To ensure reliability, embeddings are not passed through Redis. Instead, each batch is written to a unique file: {job_id}_b{batch_idx}.emb.jsonl.
+The structure of each line in the .emb.jsonl is:
+
+{
+  "chunk": { ...original_metadata... },
+  "dense_vec": [0.12, -0.34, ...],
+  "sparse_indices": [2034, 7281, 412],
+  "sparse_values": [0.91, 0.43, 0.12]
+}
+
+C. The Backpressure Mechanism
+To protect the DB Write worker from being flooded, the Embed Worker implements a "wait-and-retry" logic:
+
+It checks the length of the workspace_dbwrite queue in Redis using llen.
+
+If depth >= DBWRITE_QUEUE_MAX (500), it triggers a BACKPRESSURE_SLEEP (0.5s).
+
+This ensures the system operates at a sustainable equilibrium, preventing Redis OOM.
+
+2.2.3 The DB Write Worker (Bulk Upserts)
+The final stage converts embedded JSONL files into Qdrant points.
+
+Point Reconstruction: The worker streams the .emb.jsonl file and builds models.PointStruct objects.
+
+Deterministic ID Generation: It uses uuid.uuid5 with a namespace combining user_id, path_id, and chunk_index. This guarantees that re-indexing the same file replaces existing chunks rather than duplicating them.
+
+Bulk Upsert: Points are sent to Qdrant in bulk to minimize the number of gRPC requests.
+
+2.3 Job State Management (Redis)
+Observability is handled through a centralized job_status system in Redis.
+
+2.3.1 State Schema
+Every job is initialized with a comprehensive payload:
+
+Counters: chunks, chunks_embedded, upserted, completed_batches, expected_batches.
+
+Performance Metrics: chunks_per_second, embed_duration_ms, backpressure_hits.
+
+Status: CHUNKING → EMBEDDING → WRITING → DONE | FAILED | SKIPPED
+
+2.3.2 Atomic Updates (increment_upserted)
+Since multiple dbwrite tasks for one file can finish at once, the system implements Optimistic Locking via Redis WATCH:
+
+WATCH the job key.
+
+Fetch current completed_batches and upserted count.
+
+Update values and check if completed_batches >= expected_batches to set status to DONE.
+
+EXECUTE the transaction. If a WatchError occurs (another worker updated the key), the system retries up to 10 times.
+
+2.4 Reliability & Fault Tolerance
+2.4.1 Exponential Backoff with Jitter
+All Celery tasks use a custom _backoff method to prevent "thundering herd" failures during MIS or DB outages:
+
+image-20260604-181712.png
+2.4.2 Resource Cleanup Guarantee
+The system implements a strict "Clean-as-you-go" policy:
+
+Success Path: Workers delete their input files (safe_remove) immediately after the output for the next stage is successfully written.
+
+Failure Path: Within the MaxRetriesExceededError block, the system explicitly deletes the file associated with the failed task to prevent the /shared/uploads or /data/chunks volumes from filling up.
+
+3. Model Inference Service (MIS) Architecture 
+This section provides the exhaustive technical specification of the Model Inference Service (MIS). The MIS is a specialized, high-performance tier designed to serve dense embeddings, sparse embeddings (SPLADE), and cross-encoder reranking. 
+
+The core engineering objective of this tier is predictable performance in restricted environments: eliminating runtime downloads, minimizing memory overhead, and preventing CPU thermal throttling through strict concurrency control.
+
+3.1 The "Bake-at-Build" Strategy
+In many AI deployments, models are downloaded from HuggingFace at runtime. This is problematic in enterprise environments due to network firewalls and slow "cold starts."
+
+Docker-Based Model Embedding
+Nexus uses a Build-Time Bake strategy to ensure the service is 100% operational without internet access.
+
+Immutable Model Layers: Models are downloaded during the docker build process using an ARG MODEL_NAME and stored permanently in /app/model_cache.
+
+Layered Optimization: The COPY app/ command is placed after the model bake step. Because model layers are massive and change infrequently, this ensures that code changes do not invalidate the model cache, keeping build times fast.
+
+Runtime Execution: At startup, FastEmbed is configured to use the local cache_dir, guaranteeing instant cold starts in production.
+
+3.2 The Inference Engine: FastEmbed & ONNX
+Instead of using heavy frameworks like PyTorch or Sentence-Transformers, the MIS is built on FastEmbed, which utilizes the ONNX Runtime.
+
+Why ONNX Runtime?
+Performance: ONNX (Open Neural Network Exchange) provides a highly optimized graph representation of the model, resulting in significantly faster inference on CPUs.
+
+Lightweight: It removes the need to install the entire PyTorch/TensorFlow stack, reducing Docker image size and RAM overhead.
+
+Hardware Acceleration: Through the EXECUTION_PROVIDER configuration, the MIS can switch backends dynamically:
+
+Provider
+
+Hardware
+
+Logic / Option
+
+CPUExecutionProvider 
+
+Intel/AMD CPU 
+
+arena_extend_strategy: kSameAsRequested (optimizes memory allocation) 
+
+CoreMLExecutionProvider
+
+Apple Silicon 
+
+Leverages Apple Neural Engine / GPU 
+
+CUDAExecutionProvider 
+
+NVIDIA GPU 
+
+Specified via CUDA_DEVICE_ID 
+
+TensorrtExecutionProvider
+
+NVIDIA GPU 
+
+High-performance TensorRT optimization 
+
+3.3 Concurrency & Resource Management
+Inference is a CPU-bound process. Without constraints, a burst of requests from the embed-worker would cause 100% CPU utilization across all cores, leading to thermal throttling (where the OS lowers CPU clock speed to reduce heat), which paradoxically decreases overall throughput.
+
+A. The Async Semaphore Pattern
+To prevent CPU saturation, each model is guarded by an asyncio.Semaphore.
+
+Mechanism: Semaphores are initialized via DENSE_SEMAPHORE, SPARSE_SEMAPHORE, and RERANKER_SEMAPHORE.
+
+Effect: Only N inference requests are processed simultaneously. Other requests are suspended in the event loop without blocking the server, ensuring the API remains responsive.
+
+B. Thread Offloading & Native Batching
+Since the FastEmbed .embed() and .rerank() methods are synchronous (blocking), the MIS utilizes a hybrid async/thread approach:
+
+asyncio.to_thread: Every model call is wrapped in asyncio.to_thread. This offloads the heavy computation to a separate thread, preventing the FastAPI event loop from freezing.
+
+Internal Native Batching: The system leverages FastEmbed's internal batch_size parameter (e.g., DENSE_BATCH_SIZE=8). This allows the ONNX runtime to process multiple texts in a single SIMD (Single Instruction, Multiple Data) pass, maximizing CPU efficiency.
+
+Aggressive Memory Recovery: Because large tensors can linger in memory, every inference call is followed by an explicit gc.collect(). This immediately releases memory, preventing the container from hitting its RAM limit during bulk indexing.
+
+3.4 Service Specialization & API Logic
+The MIS uses a single codebase where the SERVICE_MODE environment variable determines which model is loaded and which endpoint is active.
+
+1. Dense Embedding Service
+Logic: The /text-embedding API can truncate dimensions based on the loaded model's native size, allowing the system to switch models (e.g., from 768 to 1024 dim) without changing the API contract.
+
+Execution Flow: async with self.dense_semaphore → asyncio.to_thread →model.embed(texts, batch_size=DENSE_BATCH_SIZE).
+
+2. Sparse Embedding Service
+Logic: Uses SparseTextEmbedding (SPLADE) to generate token-weight vectors (Indices and Values).
+
+Execution Flow: async with self.sparse_semaphore → asyncio.to_thread →model.embed(texts, batch_size=SPARSE_BATCH_SIZE).
+
+3. Cross-Encoder Reranker Service
+Logic: Uses TextCrossEncoder to score the relationship between a query and a document.
+
+Execution Flow: 
+
+async with self.reranker_semaphore.
+
+_run_scoring is offloaded via asyncio.to_thread.
+
+model.rerank(query, texts, batch_size=RERANKER_BATCH_SIZE) is executed.
+
+Results are sorted by rerank_score in descending order and sliced to top_n.
+
+3.5 Fault Tolerance & Readiness
+Startup Readiness: The load_dense_model(), load_sparse_model(), and load_reranker_model() methods return booleans. If a model fails to load (e.g., corrupted cache), the is_ready flag remains False.
+
+Graceful Degradation (Reranker): In the rerank method, if is_reranker_ready is False or an exception occurs during scoring, the system does not crash. It simply returns the original documents sliced to top_n, allowing the RAG pipeline to continue in a "fallback" mode (returning RRF results only).
+
+Monitoring:
+
+GET /health: Returns the readiness of the specific model baked into the image.
+
+GET /info: Returns the exact model name and capability baked into the image.
+
+4. The Hybrid Retrieval & Vector Storage Strategy
+This section details how IDFC Nexus stores high-dimensional data and retrieves the most relevant information using a multi-stage hybrid search pipeline. The system is designed to balance the "fuzzy" understanding of semantic search with the "exact" precision of keyword search.
+
+4.1 Vector Database Architecture (Qdrant)
+The system utilizes Qdrant as the primary vector store, configured for high-performance retrieval and memory efficiency.
+
+4.1.1 Collection Schemas
+Nexus maintains two distinct collections to isolate organizational knowledge from individual developer environments.
+A. Enterprise Collection (Enterprise_Knowledge_Base_<dim>)
+Designed for broad organizational documents (Confluence, PDFs).
+
+Primary Key: page_id (used for document-level isolation and updates).
+
+Payload: Includes content_hash for change detection.
+
+Indexing: A payload index is created on page_id to allow O(1) lookup during the dedup/update phase.
+
+B. Workspace Collection (Workspace_Knowledge_Base_<dim>)
+Designed for codebase indexing with a 3-Level Isolation Model to ensure strict multi-tenancy.
+
+Level 1: user_id → Base64 encoded email; prevents users from accessing other users' data.
+
+Level 2: workspace_id → SHA256 of the root directory; isolates different projects for the same user.
+
+Level 3: path_id → SHA256 of the absolute file path; allows for surgical deletion and updates of specific files.
+
+Payload Indexing: Keyword indexes are created on user_id, workspace_id, and path_id to enable extremely fast filtered searches.
+
+4.1.2 Vector Configuration & Tuning
+To handle large datasets on limited RAM, the following configurations are applied:
+
+Parameter
+
+Value
+
+Technical Purpose
+
+Parameter
+
+Value
+
+Technical Purpose
+
+Distance Metric 
+
+COSINE 
+
+Measures the angle between vectors; ideal for high-dimensional embeddings. 
+
+On-Disk Storage 
+
+True 
+
+Moves vector data from RAM to disk, allowing the system to index millions of points without OOM. 
+
+HNSW M 
+
+16 
+
+Controls the number of edges per node in the graph; balances search speed vs. memory. 
+
+HNSW ef_construct
+
+100 
+
+Trade-off between indexing speed and search quality. 
+
+HNSW ef 
+
+128 
+
+Controls the number of candidates explored during a query; higher = more accurate. 
+
+Sparse Threshold 
+
+1000 
+
+full_scan_threshold; determines when to switch from index-search to a full scan for sparse vectors. 
+
+4.2 The Hybrid Retrieval Pipeline
+The retrieval process does not rely on a single search method. Instead, it uses a Multi-Stage Fusion Pipeline to ensure that the most relevant context is provided to the LLM.
+
+4.2.2 Step-by-Step Technical Breakdown
+Step 1: Parallel Prefetching
+The system initiates two simultaneous searches in Qdrant using a Prefetch configuration:
+
+Dense Search: Uses the dense-vector to find chunks with similar semantic meaning.
+
+Sparse Search: Uses the sparse-vector (SPLADE) to find chunks containing specific, rare keywords.
+
+Candidate Limit: The system retrieves limit * 10 candidates from both paths to ensure a wide enough net is cast before fusion.
+
+Step 2: Reciprocal Rank Fusion (RRF)
+Since dense and sparse searches produce scores in different scales, Nexus uses RRF to merge them. RRF ignores the raw score and focuses on the Rank.
+
+This rewards documents that appear in the top results of both search methods.
+
+Step 3: Cross-Encoder Reranking
+The fused candidates are passed to the RerankService. Unlike the initial search (which compares vectors), the reranker processes the actual text of the query and the document together.
+
+Precision: This is the most accurate but most expensive step.
+
+Thresholding: Only results with a rerank_score > RERANK_THRESHOLD are returned.
+
+4.3 Fault Tolerance & Security
+4.3.1 Graceful Degradation (The Reranker Fallback)
+The system is designed to be resilient. If the Reranker service is down or fails during a request:
+
+The hybrid_search method catches the exception.
+
+A warning is logged: [WorkspaceQdrant] Reranking failed, falling back to RRF.
+
+The system returns the top-k results directly from the RRF Fusion stage.
+
+Result: The user still gets a high-quality answer, though the precision may be slightly lower.
+
+4.3.2 Multi-Tenant Isolation Logic
+Security is enforced at the database query level. Every search request must include a Filter object:
+
+Workspace Search: must=[user_id == X, workspace_id == Y].
+
+Enterprise Search: must=[page_id == Z] (if specified).
+By embedding these filters into the Qdrant query_points call, the system ensures that it is mathematically impossible for a user to retrieve vectors belonging to another user.
+
+4.3.3 Deterministic Point Management
+To prevent data duplication, the system uses Deterministic UUIDs for every chunk:
+
+This ensures that if a file is re-indexed, the existing points are overwritten rather than duplicated, maintaining a clean and efficient index.
+
+Stage 5: Multi-Agent Orchestration (Go CLI)
+This final section documents the "Cognitive Core" of IDFC Nexus. While the previous stages focused on the "Knowledge" (RAG) and "Inference" (MIS), Stage 5 describes the intelligence layer that orchestrates these tools. The Nexus CLI is a State-Driven Multi-Agent Orchestrator built in Go, designed to transform natural language into precise, multi-step system operations.
+
+5.1 System Architecture: The Daemon-TUI Model
+Nexus is implemented as a decoupled system to ensure that the AI orchestration remains stable even if the user interface is closed or restarted.
+
+5.1.1 The Nexus Daemon
+The core logic resides in a background Daemon Server (written in Go using the Gin framework).
+
+Communication: The daemon exposes an HTTP server (Port 9999) for configuration and status, and a WebSocket server for real-time, bi-directional communication with the TUI.
+
+Session Management: The daemon maintains the state of all active AI sessions, managing the State object and the connection to LLM providers.
+
+Process Management: It handles the lifecycle of background microservices (like the Salesforce MCP servers), using OS-level PID tracking to ensure no zombie processes remain after shutdown.
+
+5.1.2 The TUI (Terminal User Interface)
+The frontend is a high-performance TUI built with the Bubbletea framework.
+
+Real-time Streaming: It receives tokens and events via WebSockets, providing a character-by-character streaming experience.
+
+Observability: It visualizes the Agent Trace, showing the user exactly which agent is currently active (e.g., Enterprise Agent → System Agent) and which tools are being executed in real-time.
+
+5.2 The Agent System Core
+
+5.2.1 The State-Driven Engine
+Unlike linear chains, Nexus uses a Dynamic Execution Chain. The "intelligence" is distributed; each agent decides the next step based on the accumulated context.
+
+The State Object (Single Source of Truth)
+The State struct is passed through every agent in the chain, containing:
+
+AgentExecutionLog: A cumulative record of all prior agent outputs.
+
+NextAgentName & NextAgentInstructions: The routing targets decided by the previous agent.
+
+IsExecutionCompleted: A boolean flag that terminates the orchestration loop.
+
+AgentTrace: A map tracking status (pending, done, skipped, failed) for observability.
+
+TokenChan & ErrChan: Go channels used to stream live updates to the TUI.
+
+5.2.2 The Orchestration Loop
+The orchestrator implements a hop-based execution model with a Max-Hop Guard (10 hops) to prevent infinite loops caused by model hallucinations.
+
+Execution Logic:
+
+Initial Agent: Analyzes the query and determines the first specialist to invoke.
+
+Orchestration Loop: While !IsExecutionCompleted and hop < 10:
+
+Fetch the handler from the AgentRegistry.
+
+Execute the agent (passing the current State).
+
+Parse the response for a <ROUTING> block.
+
+Final Agent: Synthesizes the AgentExecutionLog into a clean, human-readable response.
+
+5.3 Specialized Agent Personas & Tools
+Handlers are registered in the AgentRegistry.
+
+Initial Agent: Strategic Routing.
+
+Enterprise Agent: RAG over Org docs.
+
+Workspace Agent: RAG over local code.
+
+System Agent: File/Shell ops (Surgical 5-step workflow).
+
+MCP Agent: Salesforce MCP Server via Server → Tool → Executor pipeline.
+
+Final Agent: Synthesis and sanitization.
+
+5.3.1 The Routing Mechanism
+Every agent must terminate its response with a structured JSON block:
+
+
+
+<ROUTING>
+{"next_agent_name":"workspace_agent","next_agent_instructions":"Search for the auth logic in the codebase"}
+</ROUTING>
+The ParseRoutingBlock utility extracts the clean content for the user and the routing metadata for the orchestrator.
+
+5.3.2 Agent Roles and Toolsets
+Agent
+
+Primary Purpose
+
+Key Tools / Capabilities
+
+Temperature
+
+Initial 
+
+Strategic Routing 
+
+JSON-based routing decisions, Retry logic 
+
+0.3 (Deterministic) 
+
+Enterprise
+
+Org Knowledge 
+
+search_enterprise_kb, ask_user 
+
+0.7 
+
+Workspace 
+
+Code Knowledge 
+
+search_workspace_kb, ask_user 
+
+0.7 
+
+System 
+
+Local Ops 
+
+glob, read_file, edit_file, bash, git_commit 
+
+0.7 
+
+MCP 
+
+Salesforce CRM 
+
+Server Planner → Tool Planner → Executor 
+
+0.7 
+
+Final 
+
+Synthesis 
+
+Log sanitization, Token streaming 
+
+0.3 
+
+The System Agent's Surgical Workflow
+To ensure safety, the System Agent is forced into a strict 5-step sequence:
+Discover (glob/list) → Analyze (read) → Edit (patch) →Validate (test) → Iterate.
+
+The MCP Agent's Three-Stage Pipeline
+For complex Salesforce operations, the MCP agent doesn't just call a tool; it plans:
+
+Server Planner: Which MCP server (SSE/Stdio) is needed?
+
+Tool Planner: Which specific tool (SOQL/Apex/Metadata) should be used?
+
+Executor: Executes tools in strict order to resolve relationships.
+
+5.4 High-Concurrency Indexing Logic (The Go Client)
+The CLI implements a high-performance indexing engine to feed the FastAPI server.
+
+A. Concurrent Upload Engine
+The CLI uses a Worker Pool Pattern to upload files in parallel:
+
+File Discovery: WalkRecursive (for Workspaces) or WalkTopLevel (for Enterprise) identifies supported files.
+
+Job Distribution: A jobChan distributes WalkerEntry objects to N concurrent workers (default: 5).
+
+Hashing & Dedup:
+
+For Workspaces, the client calculates the content_id (SHA256 of bytes) and path_id (SHA256 of path) before uploading.
+
+This allows the server to skip the upload immediately if the file hasn't changed.
+
+Multipart Streaming: Files are streamed as multipart/form-data to the /create-index endpoint.
+
+B. Batch Status Polling
+Instead of polling each file individually, the client implements Batch Polling:
+
+The client maintains a taskMap of all job_ids sent to the server.
+
+It uses PollAllIndexTasks to fetch statuses in batches of 50 (statusBatchSize).
+
+This reduces HTTP overhead and prevents the CLI from hitting rate limits.
+
+C. Reliability (Retry & Jitter)
+The HTTPClient implements a robust retry mechanism for network stability:
+
+Retryable Statuses: 429 (Too Many Requests), 502, 503, 504.
+
+Exponential Backoff with Jitter: Prevents "thundering herd" by randomizing retry intervals.
+
+Wait-After-429: Respects the Retry-After header sent by the server.
+
+5.5 Memory & Context Management
+5.5.1 Conversation Memory
+The system implements a Sliding Window Memory to prevent context window overflow:
+
+Window Size: Last 10 turns (configurable).
+
+Limits: 40,000 total characters, with a 6,000 character limit per turn.
+
+Automatic Truncation: Large responses are truncated to ensure the most recent context is preserved.
+
+5.5.2 Execution Context Building
+Before an agent is invoked, the system builds a prioritized prompt:
+
+Directives: Instructions from the previous agent.
+
+User Query: The original intent.
+
+Execution Log: The history of what other agents found.
+
+Conversation Memory: Previous turns of the chat.
+
+5.6 Event System & Observability
+The Go CLI utilizes an event-driven model to keep the TUI responsive.
+
+Token Events: EmitLog and EmitToolStart send structured data through TokenChan.
+
+Tool Tracing: The TUI renders EmitToolStart →  EmitToolDone cycles, allowing the user to see exactly which file is being read or which SOQL query is being executed.
+
+Human-in-the-Loop (HITL): When an agent calls ask_user, the daemon pauses the loop and uses the AskChan / ReplyChan to wait for a user response from the TUI before resuming.
+
+5.7  Enterprise Integration & Extension
+MCP Connectivity: Connects to multiple MCP servers (SSE/Stdio). LLM selection (Planner & Executor) is configurable via agent.yaml.
+
+IDFC Ecosystem: Designed as a "Pluggable Agent" system. New internal IDFC systems can be integrated by adding a new Agent to the AgentRegistry and a corresponding MCP server.
+
+5.7  User Guide: Indexing Operations
+The Nexus CLI provides a powerful index command that manages the end-to-end lifecycle of knowledge ingestion. It supports two distinct modes: Workspace (for local codebases) and Enterprise (for organizational documents).
+
+A. Basic Indexing Commands
+Indexing a Local Codebase (Workspace)
+
+nexus index --collection=workspace -d .
+
+What happens: The CLI recursively walks the directory, hashes the files, and streams them to the Indexer. The WorkspaceID is automatically derived from the absolute path of the root directory.
+
+Indexing Organizational Docs (Enterprise)
+
+nexus index --collection=enterprise -d ./docs
+
+What happens: The CLI performs a top-level walk of the directory and uploads the files to the Enterprise collection.
+
+B. Advanced Tuning & Management
+Increasing Throughput (Worker Tuning)
+For very large repositories, you can increase the number of concurrent upload workers to saturate the network pipe:
+
+nexus index --collection=workspace -d . --workers=20
+
+Technical Note: Increasing workers increases the number of concurrent multipart/form-data requests to the FastAPI server. The server's UVICORN_WORKERS and the MIS SEMAPHORE limits will act as the ultimate throttle.
+
+Surgical Purging (Clean Slate)
+If you have reorganized your project or wish to remove a specific directory from the index:
+
+nexus index --collection=workspace -d . --purge
+
+What happens: The CLI calculates the path_id for all files in the specified directory and sends a bulk delete request to Qdrant. This removes all associated chunks without affecting other workspaces.
+
+C. Command Summary Table
+Flag
+
+Short
+
+Required
+
+Default
+
+Description
+
+--collection
+
+N/A
+
+Yes
+
+N/A
+
+Target collection: workspace or enterprise.
+
+--directory
+
+-d
+
+Yes
+
+N/A
+
+Absolute or relative path to the files/folder.
+
+--workers
+
+N/A
+
+No
+
+5
+
+Number of concurrent upload threads in the Go CLI.
+
+--purge
+
+N/A
+
+No
+
+false
+
+If true, deletes the index for the specified path before exiting.
+
+D. Expected CLI Output Flow
+When running an index command, the CLI provides a real-time progress tracker:
+
+Discovery: Walking directory... Found 452 supported files.
+
+Upload: A progress bar showing [====> ] 45% as files are sent.
+
+Polling: Polling 120 queued indexing tasks...
+
+Detailed Result: For each file, it displays:
+
+✓ LoanService.java → chunk: 12 chunks | embed: 12 embedded | dbwrite: 12 inserted
+
+↷ Utils.java skipped (if content_id matches existing index).
+
+Summary: A final report showing total files succeeded, failed, and total time elapsed.
+
+6. Future Roadmap & Scaling Strategy
+The current architecture of IDFC Nexus is optimized for high-throughput ingestion on a single high-performance node (M4 Pro). To transition this into a global enterprise production environment, the following scaling and optimization vectors have been identified.
+
+6.1 Intelligent Incremental Indexing (Git Integration)
+Currently, the system uses a content_id (SHA256 of raw bytes) to skip files. While effective, it requires the Go CLI to send the SHA256 of every file to the server for verification.
+
+The Limitation: For repositories with tens of thousands of files, the "check-everything" approach creates significant network overhead.
+
+The Improvement: Implement a Git-based Change Tracking system in the Go CLI.
+
+Logic: Use git diff --name-only to identify exactly which files have changed since the last successful index.
+
+Impact: The CLI will only send POST /create-index requests for modified or new files, reducing API traffic by >90% for incremental updates.
+
+6.2 Horizontal Scaling of the Inference Fleet
+While the current MIS uses semaphores to prevent CPU saturation on one machine, a production environment will require a distributed inference cluster.
+
+Load Balanced MIS: Deploy the Model Inference Services behind a Load Balancer (e.g., Nginx).
+
+Dynamic Worker Scaling: 
+
+Currently, embed-workers are fixed. Future iterations will use KEDA (Kubernetes Event-driven Autoscaling) to spin up more embed-worker pods based on the depth of the Redis workspace_embed queue.
+
+Distributed GPU Offloading: Transition from CoreMLExecutionProvider (Local Mac) to a cluster of CUDAExecutionProvider (NVIDIA A100/H100) nodes to handle enterprise-wide indexing.
+
+6.3 Vector Database Optimization
+As the data grows from thousands of chunks to millions, the following Qdrant optimizations will be implemented:
+
+Quantization: Implement Scalar Quantization or Product Quantization (PQ) to compress vectors. This reduces the RAM footprint of the index by up to 4x with minimal loss in precision.
+
+Collection Sharding: Implement Qdrant Sharding across multiple nodes to distribute the index load and ensure high availability (HA).
+
+Advanced Reranking: Experiment with ColBERT (Late Interaction) models to improve the balance between the speed of bi-encoders and the precision of cross-encoders.
+
+6.4 Enhanced Orchestration & Memory
+For the Multi-Agent Go CLI, the following cognitive improvements are planned:
+
+Long-Term Memory: Implement a "Memory Agent" that stores common user preferences and project context in a separate Qdrant collection, allowing the agent to remember context across different sessions.
+
+Parallel Agent Execution: Transition the current linear agent chain to a Directed Acyclic Graph (DAG) execution model. This would allow the Knowledge Agent and System Agent to run in parallel if the Initial Agent determines their tasks are independent.
+
+Summary of Scaling Vectors
+Component
+
+Current State (M4 Pro)
+
+Future State (Enterprise)
+
+Key Technology
+
+Ingestion 
+
+Full-scan Dedup 
+
+Git-diff Incremental 
+
+git →Go CLI 
+
+Inference 
+
+Local Semaphores 
+
+Distributed GPU Cluster 
+
+KEDA → Kubernetes 
+
+Storage 
+
+On-Disk HNSW 
+
+Quantized Distributed Index 
+
+Qdrant Sharding / PQ 
+
+Orchestration
+
+Linear Chaining 
+
+Parallel DAG Execution 
+
+Go Concurrency / DAG 
