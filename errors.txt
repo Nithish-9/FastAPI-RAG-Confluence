@@ -1,40 +1,83 @@
-nithish.s@0325LTPB0124281 ~ % docker exec -it distributed-indexer-chunk-worker-1 /bin/sh
-# ls
-__pycache__  core  main.py  preload_treesitter.py  qdrant_config.yml  requirements.txt	router	schemas  service  temp_uploads	tests  workers
-# 
+Section 1.2.1 — Hardware Allocation & Optimization (replace existing)
+1.2.1 Hardware Allocation & Optimization
+The system is tuned for the Apple Silicon M4 Pro architecture to maximize throughput while avoiding thermal throttling. All inference runs on CPUExecutionProvider via ONNX Runtime — the primary and most stable execution path across all deployment environments.
+Resource Constraints: 14GB RAM allocated to Docker, with a 3GB Swap buffer to handle peak memory spikes during AST parsing of exceptionally large files.
+Critical Note: Swap is essential not only for AST parsing but also for tensor allocation during large batch inference and OS-level file caching during the streaming of massive .jsonl files.
+CPU Management & Thermal Control: All 12 cores are accessible, but CPU saturation is prevented entirely through application-level configuration. For large codebase indexing, thermal throttling and fan activity may be observed — this is controlled by tuning the following parameters rather than relying on any hardware acceleration framework:
 
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 585, in trace_task
-    R = retval = fun(*args, **kwargs)
-                 ~~~^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/celery/app/trace.py", line 858, in __protected_call__
-    return self.run(*args, **kwargs)
-           ~~~~~~~~^^^^^^^^^^^^^^^^^
-  File "/app/workers/ingest_worker.py", line 107, in chunk_workspace_task
-    raise self.retry(exc=exc, countdown=_backoff(self))
-          ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/celery/app/task.py", line 769, in retry
-    raise_with_context(exc)
-    ~~~~~~~~~~~~~~~~~~^^^^^
-  File "/app/workers/ingest_worker.py", line 88, in chunk_workspace_task
-    return asyncio.run(
-           ~~~~~~~~~~~^
-        run_workspace_chunk(
-        ^^^^^^^^^^^^^^^^^^^^
-    ...<10 lines>...
-        )
-        ^
-    )
-    ^
-  File "/usr/local/lib/python3.13/asyncio/runners.py", line 195, in run
-    return runner.run(main)
-           ~~~~~~~~~~^^^^^^
-  File "/usr/local/lib/python3.13/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
-  File "/usr/local/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
-    return future.result()
-           ~~~~~~~~~~~~~^^
-  File "/app/workers/workspace/workspace_chunk.py", line 26, in run_workspace_chunk
-    from service.workspace_ingestion import decode_user_identity
-ModuleNotFoundError: No module named 'service'
+DENSE_SEMAPHORE / SPARSE_SEMAPHORE / RERANKER_SEMAPHORE — limits simultaneous inference requests per model, preventing all cores from saturating simultaneously
+DENSE_BATCH_SIZE / SPARSE_BATCH_SIZE — controls ONNX SIMD batch size per inference call, balancing throughput against memory pressure
+EMBED_CONCURRENCY — limits concurrent embed worker coroutines feeding the MIS
+OMP_NUM_THREADS=6 — prevents ORT from spawning threads aggressively across all cores
+arena_extend_strategy: kSameAsRequested — prevents ORT's memory arena from greedily pre-allocating RAM, which is the primary cause of memory blowup on bare metal
+
+Execution Provider: The MIS uses CPUExecutionProvider across all environments — both inside Docker (Linux VM) and on bare metal Apple Silicon. Docker containers on macOS cannot access CoreML or any Apple Silicon hardware frameworks as they run inside a Linux virtual machine. On bare metal, while CoreMLExecutionProvider is technically available, investigation confirmed it does not provide meaningful performance gains for this model stack — see Section 3.6 for the full findings. The most impactful path to higher throughput is hosting the model fleet on GPU infrastructure via iServeBetter rather than tuning hardware providers locally.
+
+Section 3.6 — Apple Neural Engine (ANE) — Investigation & Findings (full section replace)
+3.6 Apple Neural Engine (ANE) — Investigation & Findings
+During development, an attempt was made to leverage the Apple Neural Engine (ANE) on the M4 Pro to accelerate model inference beyond CPU-level throughput. This section documents the full investigation, blockers encountered, and the final architectural decision.
+
+3.6.1 Background & Motivation
+Docker containers on macOS run inside a Linux VM and cannot access CoreML, ANE, or any Apple Silicon GPU frameworks. When the model and application code were run on bare metal to attempt hardware acceleration via CoreMLExecutionProvider, two immediate problems surfaced:
+Memory Pressure: On bare metal, Python has no memory ceiling unlike inside a Docker VM which enforces a fixed memory cap set in Docker Desktop settings. ORT's memory arena greedily pre-allocates RAM, causing the system to exceed available unified memory and swap to SSD — making everything slower regardless of execution provider. On a 24GB unified memory machine, Python allocated beyond the available physical memory, causing macOS to begin swapping aggressively.
+CoreML JIT Split-Graph: ORT's CoreML EP splits the model graph at runtime rather than running it as a unified graph. For the models in the MIS fleet, only a subset of nodes were handled by CoreML while the remaining nodes fell back to CPU:
+CoreMLExecutionProvider::GetCapability
+number of nodes in the graph: 1012
+number of nodes supported by CoreML: 796  ← JIT split, not full CoreML
+Constant data transfer between the two providers adds overhead that nullifies any CoreML gain, making it slower than pure CPU in practice. This is not a configuration issue — it is a fundamental limitation of how ONNX Runtime's CoreML EP handles transformer model graphs that were not purpose-built for CoreML.
+Why this matters: Even setting aside the JIT split problem, the Apple Neural Engine has no public Python API. CoreML EP routes primarily to the GPU partition of the Apple Silicon chip, not the Neural Engine itself. Achieving genuine ANE utilization would require converting all four models from ONNX to native .mlpackage format — a macOS-only process that bypasses fastembed entirely and requires patching production internals. The engineering cost of this path far outweighs any potential gain, particularly when the same throughput improvement can be achieved more reliably by hosting the model fleet on GPU infrastructure via iServeBetter, which would also unlock access to larger, higher-precision models beyond what is practical on local hardware.
+
+3.6.2 Why ANE Cannot Be Directly Accessed from Python
+ANE has no public API. The access chain is strictly:
+ANE
+ └── Core ML framework (Swift/Objective-C only — Apple private API)
+      └── coremltools (Python wrapper, macOS only)
+           └── ONNX Runtime CoreML EP (partial — routes mostly to GPU, not ANE)
+                └── fastembed (no CoreML awareness at all)
+Even with CoreMLExecutionProvider explicitly set, ORT routes primarily to the GPU partition of CoreML, not the Neural Engine. ANE is reserved primarily for Apple's own system applications such as Siri, Photos, and on-device translation.
+
+3.6.3 The Pre-Conversion Approach & Why It Was Abandoned
+The JIT split-graph problem only occurs when ORT compiles a raw model.onnx at runtime. The correct approach is to pre-convert each model to a native CoreML .mlpackage, which allows CoreML to handle the full graph without splitting.
+However, this path was evaluated and found to be impractical for the following reasons:
+Conversion complexity: coremltools does not accept ONNX directly. It only supports PyTorch and TensorFlow. The required pipeline is:
+model.onnx → onnx2torch → PyTorch → torch.jit.trace → coremltools → model.mlpackage
+This conversion must be performed on macOS — it cannot run inside Docker or on any non-Apple OS. Additionally, CoreML conversion requires macOS-specific tooling at every step.
+Scale of effort: The MIS fleet runs four separate models, all in ONNX format via fastembed:
+
+jinaai/jina-embeddings-v2-base-code — Code dense embeddings
+nomic-ai/nomic-embed-text-v1.5 — Text dense embeddings
+prithivida/Splade_PP_en_v1 — Sparse embeddings (SPLADE)
+jinaai/jina-reranker-v1-turbo-en — Cross-encoder reranking
+
+Each model would require an independent conversion, validation, and integration effort. Transformer models with complex attention patterns frequently have ops rejected by ANE during conversion, falling back to CPU anyway — making the entire exercise self-defeating.
+fastembed integration blocker: Even after successful conversion, fastembed 0.8.0 hardcodes model.onnx as the model file and provides no mechanism to load a .mlpackage. The internal method responsible for creating the ORT InferenceSession is invoked during parent class __init__, making subclass-level overrides ineffective. Patching fastembed internals to support .mlpackage loading is fragile and not viable for a production service.
+
+3.6.4 MLX — The Only Viable Python Path to ANE
+Apple's MLX framework is the only Python library that genuinely targets the full Apple Silicon chip stack, including the Neural Engine, through a unified Metal-accelerated compute path. Unlike ONNX Runtime's CoreML EP which splits the graph at runtime, MLX operates on natively converted models with no handoff overhead.
+The mlx-community on HuggingFace maintains MLX-converted versions of several popular embedding models:
+ModelMLX AvailableNotesBAAI/bge-small-en-v1.5✓Available in 4-bit, 8-bit, bf16 via mlx-communityBAAI/bge-m3✓Available as fp16 via mlx-communitynomic-ai/modernbert-embed-base✓Available as 4-bit via mlx-communityjinaai/jina-embeddings-v2-base-code✗No MLX port availablenomic-ai/nomic-embed-text-v1.5✗No MLX port availableprithivida/Splade_PP_en_v1✗No MLX port availablejinaai/jina-reranker-v1-turbo-en✗No MLX port available
+None of the four models used in the MIS fleet have MLX ports as of June 2026. Converting all four independently would require significant engineering effort with no guarantee of production stability, making this path impractical for the current deployment.
+
+3.6.5 Model Selection Rationale
+The four models chosen for the MIS fleet were selected under specific constraints:
+Corporate network restrictions: HuggingFace model download URLs are blocked on the IDFC internal network. Models had to be downloaded externally, baked into Docker images at build time, and shipped as self-contained image artifacts. This hard constraint eliminated any model that required runtime downloads or remote API calls.
+Size and memory budget: With 14GB allocated to Docker across the full stack (Qdrant, Redis, Celery workers, FastAPI, and four MIS containers), only lightweight ONNX-compatible models were viable. The selected models are among the smallest in their respective categories that still deliver competitive retrieval quality:
+
+jinaai/jina-embeddings-v2-base-code — 161M parameters, purpose-built for code retrieval across 30 programming languages with 8192 token context via ALiBi. Trained on 150M+ coding question-answer and docstring-source pairs from various domains.
+nomic-ai/nomic-embed-text-v1.5 — 137M parameters, supports Matryoshka Representation Learning allowing flexible dimensionality (768 down to 256) with minimal precision loss. Multimodal-aligned with nomic-embed-vision-v1.5, making it future-compatible for image+text retrieval scenarios.
+prithivida/Splade_PP_en_v1 — Efficient SPLADE++ sparse encoder for high-precision keyword-level retrieval, complementing the dense semantic search path in the hybrid pipeline without adding significant memory overhead.
+jinaai/jina-reranker-v1-turbo-en — Turbo variant of Jina's cross-encoder, optimized for inference speed while retaining reranking precision. Scores query-document pairs jointly for maximum retrieval accuracy at the final pipeline stage.
+
+iServeBetter availability: At the time of design, only one embedding model was available on iServeBetter's GPU-hosted inference platform. This made it impossible to host the full four-model MIS fleet externally, necessitating the local bake-at-build approach for all four models.
+
+3.6.6 Final Decision & Future Direction
+The ANE integration path was abandoned in favour of a stable CPUExecutionProvider configuration with ORT memory arena tuning, which matches Docker baseline throughput and eliminates memory pressure entirely.
+The most impactful long-term path is GPU-hosted inference via iServeBetter. Investing engineering effort into CoreML or ANE integration on local hardware is not the right trade-off when GPU-hosted inference offers a far cleaner and more scalable solution. As GPU-hosted model availability expands on the platform, migrating the MIS fleet would deliver:
+
+Complete elimination of CPU thermal throttling for large codebase indexing
+Access to larger, higher-precision models — larger rerankers, higher-dimension dense embeddings — that are impractical on local hardware budgets
+Significantly higher indexer throughput by removing inference as the local bottleneck
+Improved retrieval precision through better embedding models without any local hardware constraints
+Removal of the operational overhead of building, maintaining, and shipping four separate model-baked Docker images
+
+This transition is captured in the Future Roadmap (Section 6.2) as the primary inference scaling vector.
