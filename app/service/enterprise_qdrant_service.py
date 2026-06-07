@@ -21,7 +21,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("QDRANT_RETRIES", 5))
 QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
-RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "-1.0"))
 
 ENTERPRISE_COLLECTION = os.getenv("ENTERPRISE_COLLECTION", "Enterprise_Knowledge_Base")
 FINAL_COLLECTION_NAME = f"{ENTERPRISE_COLLECTION}_{ENTERPRISE_COLLECTION_DENSE_DIM}"
@@ -35,6 +35,19 @@ HNSW_M = int(os.getenv("HNSW_M", 16))
 HNSW_EF_CONSTRUCT = int(os.getenv("HNSW_EF_CONSTRUCT", 100))
 HNSW_EF = int(os.getenv("HNSW_EF", 128))
 SPARSE_THRESHOLD = int(os.getenv("SPARSE_FULL_SCAN_THRESHOLD", 1000))
+
+FUSION_STRATEGY = os.getenv("FUSION_STRATEGY", "DBSF").upper()
+DENSE_WEIGHT_PERCENT = int(os.getenv("DENSE_WEIGHT_PERCENT", 70))
+SPARSE_WEIGHT_PERCENT = 100 - DENSE_WEIGHT_PERCENT
+DENSE_SCORE_THRESHOLD = float(os.getenv("DENSE_SCORE_THRESHOLD", "0.3"))
+CANDIDATE_LIMIT_MULTIPLIER = int(os.getenv("CANDIDATE_LIMIT_MULTIPLIER", 10))
+
+FUSION_MAP = {
+    "RRF": models.Fusion.RRF,
+    "DBSF": models.Fusion.DBSF,
+}
+RESOLVED_FUSION = FUSION_MAP.get(FUSION_STRATEGY, models.Fusion.DBSF)
+
 
 class EnterpriseQdrantService:
     def __init__(self):
@@ -204,8 +217,8 @@ class EnterpriseQdrantService:
         upserted = 0
         if points:
             try:
-                enterprise_qdrant_service.client.upsert(
-                    collection_name=enterprise_qdrant_service.collection_name,
+                self.client.upsert(
+                    collection_name=self.collection_name,
                     points=points,
                 )
                 upserted = len(points)
@@ -261,11 +274,23 @@ class EnterpriseQdrantService:
             )
 
         search_filter = models.Filter(must=filter_conditions) if filter_conditions else None
-        candidate_limit = limit * 10 
+        base_candidate_limit = limit * CANDIDATE_LIMIT_MULTIPLIER
+
+        dense_limit  = int(base_candidate_limit * (DENSE_WEIGHT_PERCENT / 100))
+        sparse_limit = int(base_candidate_limit * (SPARSE_WEIGHT_PERCENT / 100))
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices,
             values=query_sparse.values,
+        )
+
+        logger.info(
+            f"[EnterpriseQdrant] Search config — "
+            f"fusion={FUSION_STRATEGY} "
+            f"dense_limit={dense_limit} "
+            f"sparse_limit={sparse_limit} "
+            f"dense_score_threshold={DENSE_SCORE_THRESHOLD} "
+            f"rerank_threshold={RERANK_THRESHOLD}"
         )
 
         try:
@@ -277,19 +302,20 @@ class EnterpriseQdrantService:
                         models.Prefetch(
                             query=query_dense,
                             using="dense-vector",
-                            limit=candidate_limit,
+                            limit=dense_limit,
                             filter=search_filter,
                             params=models.SearchParams(hnsw_ef=HNSW_EF),
+                            score_threshold=DENSE_SCORE_THRESHOLD,
                         ),
                         models.Prefetch(
                             query=sparse_query,
                             using="sparse-vector",
-                            limit=candidate_limit,
+                            limit=sparse_limit,
                             filter=search_filter,
                         ),
                     ],
-                    query=models.FusionQuery(fusion=models.Fusion.RRF),
-                    limit=candidate_limit,
+                    query=models.FusionQuery(fusion=RESOLVED_FUSION),
+                    limit=base_candidate_limit,
                 )
         except TimeoutError:
             logger.error(f"--- [EnterpriseQdrant] Search timed out after {QDRANT_TIMEOUT}s ---")
@@ -308,6 +334,7 @@ class EnterpriseQdrantService:
                 })
 
         if not candidates:
+            logger.warning("[EnterpriseQdrant] No candidates returned from hybrid search")
             return []
 
         try:
@@ -316,6 +343,12 @@ class EnterpriseQdrantService:
                 documents=candidates,
                 top_n=limit,
             )
+
+            for r in reranked:
+                logger.info(
+                    f"[EnterpriseQdrant] rerank_score={r.get('rerank_score', 0):.4f} "
+                    f"content_preview={r.get('content', '')[:80]}"
+                )
 
             filtered = [
                 r for r in reranked
