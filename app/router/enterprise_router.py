@@ -11,7 +11,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from schemas.enterprise_dto import DeleteIndexRequest, EnterpriseRetrieveRequest
 from service.generate_embedding import embed_service
 from service.enterprise_qdrant_service import enterprise_qdrant_service
-from router.utils import require_system_ready
+from router.utils import require_enterprise_ready
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +30,7 @@ async def create_index(file: UploadFile = File(...)):
     """
     Ingest a single enterprise document (PDF, DOCX, TXT, …).
     """
-    require_system_ready()
+    await require_enterprise_ready()
 
     file_bytes = await file.read(MAX_FILE_SIZE_BYTES + 1)
     if len(file_bytes) > MAX_FILE_SIZE_BYTES:
@@ -84,7 +84,7 @@ async def delete_index(request: DeleteIndexRequest):
     """
     Bulk-delete all chunks for the given list of page_ids in the enterprise collection
     """
-    require_system_ready()
+    await require_enterprise_ready()
 
     if not request.page_ids:
         return {"status": "success", "deleted_page_ids": 0}
@@ -107,7 +107,7 @@ async def retrieve(request: EnterpriseRetrieveRequest):
     """
     Hybrid semantic search over enterprise collection.
     """
-    require_system_ready()
+    await require_enterprise_ready()
 
     try:
         dense_vecs, sparse_vecs = await embed_service.get_combined_embeddings(

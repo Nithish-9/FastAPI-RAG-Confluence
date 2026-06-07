@@ -186,8 +186,6 @@ def chunk_enterprise_task(
         raise
     except Exception as exc:
         raise self.retry(exc=exc, countdown=_backoff(self))
-    finally:
-        safe_remove(file_path)
 
 
 
