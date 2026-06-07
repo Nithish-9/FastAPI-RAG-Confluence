@@ -1,3 +1,11 @@
+Since docker runs linux containers, onnxruntime cannot access the Apple Neural Engine or GPU Frameworks from the contianer, since the dowloading the model from hugging face is blocked and I have backed the model and application code inside the docker image and if we are running this model inference service application code inside the container I have optimized for that as well my implementing the sempahore and batching logic if we are running on the bare Apple silicon engine or NVDIA GPU then we have to run it on bare metal hardware so that frameworks are accessed directly. Hence the only way to utilize the hardware is to extract the application code and model from docker image and save it inside the desired folder and running them with different ports and also you would have to modify the docker compose file accordingly so that there will no networking issues across the services, I have provided both docker compose files
+
+I have provided all the requirements.txt folder where we can run on any hardware wihout having any conflicts
+
+Since I got no choice, I had to download the model in some other laptop, back it inside the image and had to extract it from the docker image to run on bare metal, so if the dimesions are less and if you want to run inside as contianerized services then use the docker image but it fallbacks to CPU since linux cannot access the COREML or NVDIA GPU frameworks
+
+
+
 IDFC Nexus: Unified Intelligence Core for Distributed Knowledge Orchestration
 
 
