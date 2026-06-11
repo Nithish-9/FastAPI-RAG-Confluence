@@ -23,7 +23,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 QDRANT_RETRIES = int(os.getenv("RETRIES", 5))
 QDRANT_TIMEOUT = int(os.getenv("QDRANT_TIMEOUT", 60))
-RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "-1.0"))
 
 WORKSPACE_COLLECTION = os.getenv(
     "WORKSPACE_COLLECTION", "Workspace_Knowledge_Base"
@@ -39,6 +39,18 @@ HNSW_M = int(os.getenv("HNSW_M", 16))
 HNSW_EF_CONSTRUCT = int(os.getenv("HNSW_EF_CONSTRUCT", 100))
 HNSW_EF = int(os.getenv("HNSW_EF", 128))
 SPARSE_THRESHOLD = int(os.getenv("SPARSE_FULL_SCAN_THRESHOLD", 1000))
+
+FUSION_STRATEGY = os.getenv("FUSION_STRATEGY", "DBSF").upper()
+DENSE_WEIGHT_PERCENT = int(os.getenv("DENSE_WEIGHT_PERCENT", 70))
+SPARSE_WEIGHT_PERCENT = 100 - DENSE_WEIGHT_PERCENT
+DENSE_SCORE_THRESHOLD = float(os.getenv("DENSE_SCORE_THRESHOLD", "0.3"))
+CANDIDATE_LIMIT_MULTIPLIER = int(os.getenv("CANDIDATE_LIMIT_MULTIPLIER", 10))
+
+FUSION_MAP = {
+    "RRF": models.Fusion.RRF,
+    "DBSF": models.Fusion.DBSF,
+}
+RESOLVED_FUSION = FUSION_MAP.get(FUSION_STRATEGY, models.Fusion.DBSF)
 
 
 class WorkspaceQdrantService:
@@ -311,35 +323,48 @@ class WorkspaceQdrantService:
             )
 
         search_filter = models.Filter(must=must_conditions)
-        candidate_limit = top_k * 10 
+        base_candidate_limit = top_k * CANDIDATE_LIMIT_MULTIPLIER
+
+        dense_limit  = int(base_candidate_limit * (DENSE_WEIGHT_PERCENT / 100))
+        sparse_limit = int(base_candidate_limit * (SPARSE_WEIGHT_PERCENT / 100))
 
         sparse_query = models.SparseVector(
             indices=query_sparse.indices,
             values=query_sparse.values,
         )
 
+        logger.info(
+            f"[WorkspaceQdrant] Search config — "
+            f"fusion={FUSION_STRATEGY} "
+            f"dense_limit={dense_limit} "
+            f"sparse_limit={sparse_limit} "
+            f"dense_score_threshold={DENSE_SCORE_THRESHOLD} "
+            f"rerank_threshold={RERANK_THRESHOLD}"
+        )
+
         try:
             async with asyncio.timeout(QDRANT_TIMEOUT):
-                response = await asyncio.to_thread( 
+                response = await asyncio.to_thread(
                     self.client.query_points,
                     collection_name=self.collection_name,
                     prefetch=[
                         models.Prefetch(
                             query=query_dense,
                             using="dense-vector",
-                            limit=candidate_limit,
+                            limit=dense_limit,
                             filter=search_filter,
                             params=models.SearchParams(hnsw_ef=HNSW_EF),
+                            score_threshold=DENSE_SCORE_THRESHOLD,
                         ),
                         models.Prefetch(
                             query=sparse_query,
                             using="sparse-vector",
-                            limit=candidate_limit,
+                            limit=sparse_limit,
                             filter=search_filter,
                         ),
                     ],
-                    query=models.FusionQuery(fusion=models.Fusion.RRF),
-                    limit=candidate_limit,
+                    query=models.FusionQuery(fusion=RESOLVED_FUSION),
+                    limit=base_candidate_limit,
                 )
         except TimeoutError:
             logger.error(
@@ -369,6 +394,7 @@ class WorkspaceQdrantService:
                 })
 
         if not candidates:
+            logger.warning("[WorkspaceQdrant] No candidates returned from hybrid search")
             return []
 
         try:
@@ -378,9 +404,16 @@ class WorkspaceQdrantService:
                 top_n=top_k,
             )
 
+            for r in reranked:
+                logger.info(
+                    f"[WorkspaceQdrant] rerank_score={r.get('rerank_score', 0):.4f} "
+                    f"file={r.get('file_name')} "
+                    f"symbol={r.get('symbol')}"
+                )
+
             filtered = [
                 r for r in reranked
-                if (r.get("rerank_score") or 0) > RERANK_THRESHOLD 
+                if (r.get("rerank_score") or 0) > RERANK_THRESHOLD
             ]
 
             if not filtered:

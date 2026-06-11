@@ -17,7 +17,7 @@ from schemas.workspace_dto import (
 from service.generate_embedding import embed_service
 from service.workspace_qdrant_service import workspace_qdrant_service
 from service.workspace_ingestion import decode_user_identity
-from router.utils import require_system_ready
+from router.utils import require_workspace_ready
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +58,7 @@ async def create_index(
     The client sends this as multipart/form-data.
     Dedup: if (path_id + content_id) already exists, ingestion is skipped.
     """
-    require_system_ready()
+    await require_workspace_ready()
     raw_header = _require_user_header(x_user_email)
 
     file_bytes = await file_data.read(MAX_FILE_SIZE_BYTES + 1)
@@ -69,7 +69,7 @@ async def create_index(
         )
     
     temp_path = f"/shared/uploads/{path_id}_{content_id[:12]}"
-    async with aiofiles.open(temp_path, "wb") as f: #wb means write binary not the actual text, raw bytes
+    async with aiofiles.open(temp_path, "wb") as f:
         await f.write(file_bytes)
 
     job_id = str(uuid.uuid4())
@@ -119,7 +119,7 @@ async def delete_index(
     The delete-worker calls this with node.ChildFilePathIDs so it never
     has to traverse sub-trees again.
     """
-    require_system_ready()
+    await require_workspace_ready()
     raw_header = _require_user_header(x_user_email)
 
     user_id, _ = decode_user_identity(raw_header)
@@ -159,7 +159,7 @@ async def retrieve(
     Returns reranked results with full metadata so the LLM can reason about
     which file / symbol each chunk belongs to.
     """
-    require_system_ready()
+    await require_workspace_ready()
     raw_header = _require_user_header(x_user_email)
 
     user_id, _ = decode_user_identity(raw_header)

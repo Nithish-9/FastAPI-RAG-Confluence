@@ -93,6 +93,7 @@ async def _init_redis() -> bool:
         await client.set("__health__", "1", ex=10)
         _redis_client = client
         set_redis_client(client)
+        system_state.set_redis_client(client)
         logger.info("--- [SYSTEM] Redis client initialized ---")
         return True
     except Exception as e:
