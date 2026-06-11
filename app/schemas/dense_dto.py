@@ -15,6 +15,6 @@ class DenseEmbedding(BaseModel):
 
 
 class DenseEmbedResponse(BaseModel):
-    dimension: int
+    dimension: Optional[int] = None 
     data: List[DenseEmbedding]
-    usage: Dict[str, int]
+    usage: Optional[Dict[str, Any]] = None 
